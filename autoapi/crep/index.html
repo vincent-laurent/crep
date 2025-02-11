@@ -345,7 +345,7 @@
 <td><p>Removes duplicated rows by aggregating them.</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="#crep.merge_event" title="crep.merge_event"><code class="xref py py-obj docutils literal notranslate"><span class="pre">merge_event</span></code></a>(data_left, data_right, id_discrete, ...)</p></td>
-<td><p>Merges two dataframes on both discrete and continuous indices, with forward-filling of missing data.</p></td>
+<td><p>Assigns the details of events occurring at a specific points, in data_right, to the corresponding segment</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="#crep.aggregate_on_segmentation" title="crep.aggregate_on_segmentation"><code class="xref py py-obj docutils literal notranslate"><span class="pre">aggregate_on_segmentation</span></code></a>(df_segmentation, df_data, ...)</p></td>
 <td><p>adds data to segmentation</p></td>
@@ -444,12 +444,8 @@ id_continuous and id_discrete columns don’t need to be specified in the dictio
 <dl class="py function">
 <dt class="sig sig-object py" id="crep.merge_event">
 <span class="sig-prename descclassname"><span class="pre">crep.</span></span><span class="sig-name descname"><span class="pre">merge_event</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">data_left</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">pandas.DataFrame</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">data_right</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">pandas.DataFrame</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">id_discrete</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">iter</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">id_continuous</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="p"><span class="pre">[</span></span><span class="pre">Any</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">id_event</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#crep.merge_event" title="Link to this definition">#</a></dt>
-<dd><p>Merges two dataframes on both discrete and continuous indices, with forward-filling of missing data.</p>
-<p>This function merges two Pandas DataFrames (<cite>data_left</cite> and <cite>data_right</cite>) based on discrete and continuous keys.
-It assigns the event data from data_right to the correct segment in data_left, if the event is not “out-of-bound”
-relative to the segments in data_left. The result is a dataframe with a new row for each event. Rows with NaN
-event data are kept to represent the segment state prior to the occurrence of any event (as such the returned
-dataframe contains duplicates based on subsets of columns id_discrete and id_continuous).</p>
+<dd><p>Assigns the details of events occurring at a specific points, in data_right, to the corresponding segment
+in data_left.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><dl class="simple">
