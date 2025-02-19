@@ -847,7 +847,6 @@ def aggregate_duplicates(
     verbose: boolean
         whether to print shape of df and if df is admissible at the end of the function.
 
-
     Returns
     -------
     df: pandas dataframe

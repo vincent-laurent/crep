@@ -291,6 +291,26 @@ def compute_cumulated_length(
     return cumul
 
 
+def weighted_mode(df: pd.DataFrame, weights: pd.Series):
+    """ weights can be the length of the segments """
+    output = {}
+    for col in df.columns:
+        weights.index = df[col]
+        vc = df[col].value_counts()
+        # applies weights to value_counts Series
+        for idx in vc.index:
+            mask = weights.index == idx
+            vc.loc[idx] *= weights.loc[mask].sum()
+        vc = vc.sort_values(ascending=False)
+        # detects ex-aequo
+        mask = vc == vc.iloc[0]
+        mode = list(vc.index[mask])
+        mode = ", ".join(mode)
+        # assign mode to output dict
+        output[col] = mode
+    return pd.Series(output)
+
+
 def concretize_aggregation(
         df: pd.DataFrame,
         id_discrete: list[Any],
@@ -344,7 +364,8 @@ def concretize_aggregation(
         group_by = group_by + add_group_by
 
     if dict_agg is None:
-        warnings.warn("dict_agg not specified. Default aggregation operator set to 'mean' for all features.")
+        warnings.warn("dict_agg not specified. Default aggregation operator set to 'mean' for all numerical features"
+                      " and to 'mode' for categorical features.")
         columns = [col for col in df.columns if col not in [*group_by, *id_discrete, *id_continuous]]
         numerical_columns = list(df[columns].select_dtypes("number").columns)
         categorical_columns = list(df[columns].select_dtypes("object").columns)
@@ -369,8 +390,12 @@ def concretize_aggregation(
         # Means are weighted by the length of the segments. Sums are not
         # To apply weights: mean = sum of (variable * length of segment) / sum of lengths of segments
         if k == "mode":
-            data = df[group_by + v].groupby(by=group_by).agg(lambda x: ", ".join(x.mode().to_list())).reset_index().drop(group_by, axis=1)
+            df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
+            data = df[group_by + v + ["__diff__"]].groupby(by=group_by).apply(
+                lambda df: weighted_mode(df=df[v], weights=df["__diff__"])
+            ).reset_index().drop(group_by, axis=1)
             df_gr.append(data)
+            drop_cols.add("__diff__")
         elif k == "mean":
             # divider
             df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
