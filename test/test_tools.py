@@ -124,7 +124,7 @@ def test_concretize_aggregation():
                        "cont2": [100, 150, 100, 150, 200, 100, 150, 200],
                        "date": [2008, 2010, 2014, 2016, 2018, 2020, 2022, 2024],
                        "objet": ["A", "A", "A", "A", "B", "B", "B", "B"]})
-    df_test = tools.concretize_aggregation_polars(
+    df_test = tools.concretize_aggregation(
         df,
         id_discrete=["discr1", "discr2"],
         id_continuous=["cont1", "cont2"],

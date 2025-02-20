@@ -928,9 +928,7 @@ def aggregate_duplicates(
         drop_cols.add("__diff__")
         for col in v:
             drop_cols.add(col)
-            splits = col.split("_")
-            if splits[0] != "mean":
-                dict_renaming[col] = "mean_" + col
+            dict_renaming[col] = tools.name_simplifier(["mean_" + col])[0]
 
     # other than means
     columns = list(set(group_by + dict_agg["max"] + dict_agg["min"] + dict_agg["sum"] + dict_agg["mode"]))
@@ -955,11 +953,15 @@ def aggregate_duplicates(
     for col in columns:
         if col not in group_by:
             drop_cols.add(col)
-            splits = col.split("_")
             for agg_type in ["max", "min", "sum", "mode"]:
                 if col in dict_agg[agg_type]:
-                    if agg_type not in splits[0]:
-                        dict_renaming[col] = f"{agg_type}_" + col
+                    # renaming columns in df_no_dupl
+                    rk = list(dict_renaming.keys())
+                    if col in rk:
+                        df_no_dupl[col + f"_{len(rk)}"] = df_no_dupl[col]
+                        dict_renaming[col + f"_{len(rk)}"] = tools.name_simplifier([f"{agg_type}_" + col])[0]
+                    else:
+                        dict_renaming[col] = tools.name_simplifier([f"{agg_type}_" + col])[0]
 
     # concatenation of all groupby dataframes
     df_dupl = df_dupl.drop(list(drop_cols), axis=1)
