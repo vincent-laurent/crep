@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
+import polars as pl
+
 
 from crep import tools
 from crep.tools import concretize_aggregation
@@ -832,7 +834,6 @@ def aggregate_duplicates(
 ):
     """
     Removes duplicated rows by aggregating them.
-    TODO : assess
 
     Parameters
     ----------
@@ -876,13 +877,20 @@ def aggregate_duplicates(
 
     # =============== groupby & agg of df_dupl ==================
     drop_cols = set()  # columns that should be removed at the end ot the process
-    df_gr = []  # list of dataframes that will further be concatenated
+    df_mean = None
+    df_other = None
     colnames = []  # names of new columns
 
     if dict_agg is None:
         warnings.warn("dict_agg not specified. Default aggregation operator set to 'mean' for all features.")
         columns = [col for col in df.columns if col not in ["__lim__", *id_discrete, *id_continuous]]
-        dict_agg = {"mean": columns}
+        numerical_columns = list(df[columns].select_dtypes("number").columns)
+        categorical_columns = list(df[columns].select_dtypes("object").columns)
+        dict_agg = {}
+        if len(numerical_columns) > 0:
+            dict_agg = {"mean": numerical_columns}
+        if len(categorical_columns) > 0:
+            dict_agg["mode"] = categorical_columns
 
     # define id_continuous agg operators
     if "min" in dict_agg.keys():
@@ -894,46 +902,88 @@ def aggregate_duplicates(
     else:
         dict_agg["max"] = [id_continuous[1]]
 
+    # specific for polars implementation. Keys should absolutely exist
+    for agg_type in ["mean", "max", "min", "sum", "mode"]:
+        if agg_type not in dict_agg:
+            dict_agg[agg_type] = []
+
     group_by = [*id_discrete, "__lim__"]
     dict_renaming = {}
-    for i, items in enumerate(dict_agg.items()):
-        k, v = items
-        if k == "mode":
-            data = df_dupl[group_by + v].groupby(by=group_by).agg(lambda x: ", ".join(x.mode().to_list()[0])).reset_index().drop(group_by, axis=1)
-        else:
-            data = df_dupl[group_by + v].groupby(by=group_by).agg(k).reset_index().drop(group_by, axis=1)
-        df_gr.append(data)
-        colnames += [f"{k}_" + col for col in v]
+
+    df_pl = pl.DataFrame(df_dupl)
+    if len(dict_agg["mean"]) > 0:
+        v = dict_agg["mean"]
+        df_dupl["__diff__"] = df_dupl[id_continuous[1]] - df_dupl[id_continuous[0]]
+        divider = pd.concat([df_dupl["__diff__"]] * len(v), axis=1)
+        divider.columns = v
+        divider = pd.concat([df_dupl[group_by], divider], axis=1)
+        divider = divider.groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1)
+        # mean calculation
+        df_dupl[v] = df_dupl[v].mul(df_dupl["__diff__"], axis=0)
+        data = df_dupl[group_by + v].groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1) / divider
+        data.columns = "mean_" + pd.Series(data.columns)
+        df_core = df_dupl[group_by].drop_duplicates().reset_index(drop=True)
+        data = pd.concat([df_core, data], axis=1)
+        df_mean = data
+        drop_cols.add("__diff__")
         for col in v:
             drop_cols.add(col)
-            # renaming columns in df_no_dupl
-            rk = list(dict_renaming.keys())
-            if col not in id_continuous:
-                if col in rk:
-                    df_no_dupl[col + f"_{len(rk)}"] = df_no_dupl[col]
-                    dict_renaming[col + f"_{len(rk)}"] = tools.name_simplifier([f"{k}_" + col])[0]
-                else:
-                    dict_renaming[col] = tools.name_simplifier([f"{k}_" + col])[0]
+            splits = col.split("_")
+            if splits[0] != "mean":
+                dict_renaming[col] = "mean_" + col
+
+    # other than means
+    columns = list(set(group_by + dict_agg["max"] + dict_agg["min"] + dict_agg["sum"] + dict_agg["mode"]))
+    schema = df_pl.schema
+    data = df_pl[columns].group_by(group_by).agg(
+        pl.col(dict_agg["max"]).max().name.prefix("max_"),
+        pl.col(dict_agg["min"]).min().name.prefix("min_"),
+        pl.col(dict_agg["sum"]).sum().name.prefix("sum_"),
+        pl.col(dict_agg["mode"]).drop_nulls().drop_nans().mode().name.prefix("mode_"),
+    )
+    mode_columns = [col for col in data.columns if "mode_" in col]
+    if len(mode_columns) > 0:
+        data = data.with_columns(
+            pl.col(col_).map_elements(
+                lambda x: x[0] if len(x) > 0 else None, return_dtype=schema[col_.replace("mode_", "", 1)])
+            .alias(col_)
+            for col_ in mode_columns
+        )
+    data = pd.DataFrame(data, columns=data.columns)
+    data = data.fillna(np.nan)
+    df_other = data
+    for col in columns:
+        if col not in group_by:
+            drop_cols.add(col)
+            splits = col.split("_")
+            for agg_type in ["max", "min", "sum", "mode"]:
+                if col in dict_agg[agg_type]:
+                    if agg_type not in splits[0]:
+                        dict_renaming[col] = f"{agg_type}_" + col
 
     # concatenation of all groupby dataframes
-    df_gr = pd.concat(df_gr, axis=1)
-    df_gr.columns = tools.name_simplifier(colnames)
-    df_dupl = df_dupl.drop_duplicates(subset=group_by).reset_index(drop=True)
-    df_dupl = df_dupl.drop(columns=list(drop_cols))
-    df_dupl.columns = tools.name_simplifier(df_dupl.columns)
-    df_dupl = pd.concat([df_dupl, df_gr], axis=1)
-    # drop unnecessary columns (those that were processed in group_by)
+    df_dupl = df_dupl.drop(list(drop_cols), axis=1)
+    df_dupl = df_dupl.drop_duplicates(group_by).reset_index(drop=True)
+
+    if df_mean is not None:
+        df_mean.columns = tools.name_simplifier(list(df_mean.columns))
+        df_dupl = df_dupl.merge(right=df_mean, how="left", on=group_by)
+    if df_other is not None:
+        df_other.columns = tools.name_simplifier(list(df_other.columns))
+        df_dupl = df_dupl.merge(right=df_other, how="left", on=group_by)
+
     df_dupl = df_dupl.drop(
         columns=["__lim__"],
-    ).rename(
-        columns={f"min_{id_continuous[0]}": id_continuous[0], f"max_{id_continuous[1]}": id_continuous[1]}
     ).sort_values(
-        by=[*id_discrete, id_continuous[1]]
+        by=[*id_discrete, f"max_{id_continuous[1]}"]
     ).reset_index(drop=True)
 
     # =============== recombining df_dupl & df_no_dupl ==================
     df_no_dupl = df_no_dupl.rename(columns=dict_renaming)
     df = pd.concat([df_dupl, df_no_dupl], axis=0)
+    df = df.rename(
+        columns={f"min_{id_continuous[0]}": id_continuous[0], f"max_{id_continuous[1]}": id_continuous[1]}
+    )
     df = df.sort_values(by=[*id_discrete, id_continuous[1]]).reset_index(drop=True)
     df = tools.reorder_columns(df=df, id_discrete=id_discrete, id_continuous=id_continuous)
 
@@ -1074,11 +1124,11 @@ def split_segment(
         df_temp[id_continuous[1]] = (
                 df_temp[id_continuous[0]]
                 + df_temp["__diff__"] * ((df_temp["__n_cut_dyn__"]) / df_temp["__n_cut__"])
-        ).round().astype("int")
+        ).astype("float").round().astype("int")
         df_temp[id_continuous[0]] = (
                 df_temp[id_continuous[0]]
                 + df_temp["__diff__"] * ((df_temp["__n_cut_dyn__"] - 1) / df_temp["__n_cut__"])
-        ).round().astype("int")
+        ).astype("float").round().astype("int")
         new_rows.append(df_temp)
         df["__n_cut_dyn__"] -= 1
     df = pd.concat(new_rows, axis=0).sort_values(by=[*id_discrete, id_continuous[1]]).reset_index(drop=True)
@@ -1485,6 +1535,3 @@ def aggregate_on_segmentation(
     df_merge = tools.reorder_columns(df_merge, id_discrete, id_continuous)
 
     return df_merge
-
-
-

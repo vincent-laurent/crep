@@ -1,206 +1,326 @@
+# from encodings.punycode import selective_find
+
 import pandas as pd
-from crep.table import DataFrameContinuous
-from crep import tools, base
+from typing import Any, Literal
+import warnings
+
+from crep import base, tools
 
 
-def test_constructor(get_examples):
-    df_left, df_right = get_examples
-    df = DataFrameContinuous(
-        df_left,
-        discrete_index=["id"],
-        continuous_index=["t1", "t2"]
-    )
-    assert hasattr(df, "discrete_index")
-    assert hasattr(df, "continuous_index")
-    assert hasattr(df, "admissible")
-    assert str(df) in DataFrameContinuous.instances
+class DataFrameContinuous(pd.DataFrame):
+    instances = []
 
-    # print(df**2)
-    # assert hasattr(df**2, "discrete_index")
+    def __init__(
+            self, *args,
+            discrete_index,
+            continuous_index: [Any, Any],
+            **kwargs):
+        super().__init__(*args, **kwargs)
+        self._discrete_index = discrete_index
+        self._continuous_index = continuous_index
+        self._checks()
+        self._overriding()
 
+    def _checks(self):
+        if len(self._continuous_index) != 2:
+            warnings.warn("the constructor must have 2 continuous index")
+        for i in [*self._continuous_index, *self._discrete_index]:
+            if i not in self.columns:
+                warnings.warn(f"{i} must be in columns")
 
-def test_getitem(get_examples_dataframe_continuous):
-    df, _ = get_examples_dataframe_continuous
-    new_df = df[["id", "t1", "t2"]]
-    assert isinstance(new_df, DataFrameContinuous), type(new_df)
+    def _make_func(self, attrib):
+        """
+        creates the functions that will override pd.DataFrame functions such as to return the current
+        class instead of the parent class.
+        """
+        def func(*args, **kwargs):
+            result = getattr(super(DataFrameContinuous, self), attrib)(*args, **kwargs)
+            if isinstance(result, pd.DataFrame):
+                return DataFrameContinuous(result,
+                                           discrete_index=self._discrete_index,
+                                           continuous_index=self._continuous_index)
+            return result
+        return func
 
+    def _overriding(self):
+        """
+        Goes through all attributes of the parent class and override the function, especially the return data type,
+        when necessary. The running time of this function is 1ms, so 1s lost every 1000 new instances created.
+        """
+        if str(self) not in DataFrameContinuous.instances:
+            for attrib in [func for func in dir(pd.DataFrame)]:
+                if attrib not in ["__getitem__"]:
+                    if callable(getattr(pd.DataFrame, attrib)):
+                        self.__dict__[attrib] = self._make_func(attrib)
+            DataFrameContinuous.instances.append(str(self))
 
-def test_concat_1(get_examples_dataframe_continuous):
-    df_left, df_right = get_examples_dataframe_continuous
-    res_internal_method = df_left.concat(other_dfs=df_right)
-    res_external_method = pd.concat([df_left, df_right])
-    assert (res_internal_method.shape == res_external_method.shape,
-            (res_internal_method.shape,  res_external_method.shape))
-    assert isinstance(res_internal_method, DataFrameContinuous), type(res_internal_method)
+    def __getitem__(self, key):
+        """
+        Also needs to be modified since df[key] can be used to return a subsample of the df
+        """
+        result = getattr(super(DataFrameContinuous, self), "__getitem__")(key)
+        if isinstance(result, pd.DataFrame):
+            return DataFrameContinuous(result,
+                                       discrete_index=self._discrete_index,
+                                       continuous_index=self._continuous_index)
+        return result
 
+    def _return(self, df):
+        if isinstance(df, DataFrameContinuous):
+            return df
+        else:
+            return DataFrameContinuous(df,
+                                       discrete_index=self._discrete_index,
+                                       continuous_index=self._continuous_index)
 
-def test_concat_2(get_examples_dataframe_continuous):
-    df_left, df_right = get_examples_dataframe_continuous
-    res_internal_method = df_left.concat(other_dfs=df_right, axis=1)
-    res_external_method = pd.concat([df_left, df_right], axis=1)
-    assert (res_internal_method.shape == res_external_method.shape,
-            (res_internal_method.shape,  res_external_method.shape))
-    assert isinstance(res_internal_method, DataFrameContinuous), type(res_internal_method)
+    def concat(self, other_dfs: pd.DataFrame | list[pd.DataFrame], **kwargs) -> 'DataFrameContinuous':
+        """
+        concat is an external function (not in the pd.DataFrame class, but called with pd.concat()
+        This function builds the concat method such as to be able to call it as such: df.concat()
+        """
+        df = self
+        if type(other_dfs) is not list:
+            other_dfs = [other_dfs]
+        new_df = pd.concat([df]+other_dfs, **kwargs)
+        return self._return(new_df)
 
+    def reorder_columns(self):
+        df = self
+        df = tools.reorder_columns(
+            df=df,
+            id_discrete=self._discrete_index,
+            id_continuous=self._continuous_index
+        )
+        return self._return(df)
 
-def test_reorder_columns(get_examples_dataframe_continuous):
-    df, _ = get_examples_dataframe_continuous
-    column_order = list(df.columns)
-    df = df[["data1", "t2", "id", "t1"]]
-    assert list(df.columns) != column_order
-    df = df.reorder_columns()
-    assert list(df.columns) == column_order
-    assert isinstance(df, DataFrameContinuous), type(df)
+    def auto_sort(self):
+        df = self
+        by_ = [col for col in [*df.discrete_index, *df.continuous_index] if col in self.columns]
+        df = self.sort_values(by=by_).reset_index(drop=True)
+        df = self._return(df)
+        df = df.reorder_columns()
+        return self._return(df)
 
+    def filter_by_discrete_variables(
+            self,
+            dict_range: dict[str, tuple[Any | None, Any | None]],
+            keep_nan: bool = False
+    ) -> 'DataFrameContinuous':
+        """
+        Filters a dataset by keeping only the specified values
 
-def test_auto_sort(get_examples_dataframe_continuous):
-    df_left, df_right = get_examples_dataframe_continuous
-    df_left = df_left.concat(other_dfs=df_right)
-    df_left = df_left.auto_sort()
-    assert df_left["id"].iloc[2] == 1.0, df_left
-    assert isinstance(df_left, DataFrameContinuous), type(df_left)
+        Parameters
+        ----------
+        dict_range: dict[str, tuple[Any, Any]]
+            A dictionary with for keys the name of the variables and for values a tuple containing the minimum value
+            to keep and the maximum value to keep
+        keep_nan: optional, default to False
+            if True, rows with nan are kept
+        """
+        df = self
+        for k, v in dict_range.items():
+            mask = df[k].isin(v)
+            if keep_nan:
+                mask = mask | df[k].isna()
+            df = df.loc[mask, :].reset_index(drop=True)
+        return self._return(df)
 
+    def filter_by_continuous_variables(
+            self,
+            dict_range: dict[str, tuple[Any | None, Any | None]],
+            keep_nan: bool = True,
+    ) -> 'DataFrameContinuous':
+        """
+        Filter a dataset by keeping the values above, between or below continuous values
 
-def test_filter_by_discrete_variable(get_advanced_examples_dataframe_continuous):
-    df, _ = get_advanced_examples_dataframe_continuous
-    df = df.filter_by_discrete_variables(dict_range={"id": [1], "id2": ["b"]})
-    assert df.shape == (1, 5), df
-    assert isinstance(df, DataFrameContinuous), type(df)
+        Parameters
+        ----------
+        dict_range: dict[str, tuple[Any, Any]]
+            A dictionary with for keys the name of the variables and for values a tuple containing the minimum value
+            to keep and the maximum value to keep
+        keep_nan: optional, default to True
+            if True, rows with nan are kept
+        """
+        df = self
+        for k, v in dict_range.items():
+            minimum, maximum = v
+            if minimum is None and maximum is None:
+                raise Exception("Error: to filter by date, the tuple with the range cannot be (None, None)")
+            elif minimum is None:
+                mask = df[k] <= maximum
+            elif maximum is None:
+                mask = df[k] >= minimum
+            else:
+                mask = (df[k] >= minimum) & (df[k] <= maximum)
+            if keep_nan:
+                mask = mask | df[k].isna()
+            df = df.loc[mask, :].reset_index(drop=True)
+        return self._return(df)
 
+    def make_admissible(self, verbose=False):
+        df = self
+        if not self.admissible:
+            df = tools.build_admissible_data(
+                df=df,
+                id_discrete=self._discrete_index,
+                id_continuous=self._continuous_index
+            )
+        is_admissible = tools.admissible_dataframe(
+                data=df,
+                id_discrete=self._discrete_index,
+                id_continuous=self._continuous_index
+        )
+        if not is_admissible and sum(df.duplicated(subset=self._discrete_index + self._continuous_index)) > 0:
+            warnings.warn("Function aggregate_duplicates used with 'mean' as default aggregation operator "
+                          "in order to make the dataframe admissible.")
+            df = base.aggregate_duplicates(
+                df=df,
+                id_discrete=self._discrete_index,
+                id_continuous=self._continuous_index
+            )
+        df = self._return(df)
+        if not df.admissible:
+            print("Warning: the dataframe is still not admissible. Running make_admissible() another time might be needed.")
+        if verbose:
+            print("post make_admissible. Admissible:", df.admissible)
+            print(df.shape)
+        df = df.auto_sort()
+        return df
 
-def test_filter_by_continuous_variable(get_advanced_examples_dataframe_continuous):
-    _, df = get_advanced_examples_dataframe_continuous
-    print(df.shape)
-    df_new = df.filter_by_continuous_variables(dict_range={"data2": (0.1, 0.2)})
-    assert df_new.shape == (7, 4), df_new.shape
-    df_new = df.filter_by_continuous_variables(dict_range={"data2": (None, 0.2)})
-    assert df_new.shape == (7, 4), df_new.shape
-    df_new = df.filter_by_continuous_variables(dict_range={"data2": (0.2, None)})
-    assert df_new.shape == (6, 4), df_new.shape
-    assert isinstance(df, DataFrameContinuous), type(df)
+    def create_continuity(self, limit=None, sort=False) -> 'DataFrameContinuous':
+        df = tools.create_continuity(
+            df=self,
+            id_discrete=self._discrete_index,
+            id_continuous=self._continuous_index,
+            limit=limit,
+            sort=sort
+        )
+        return self._return(df)
 
+    def crep_merge(
+            self,
+            data_right: pd.DataFrame,
+            how: str,
+            remove_duplicates: bool = False,
+            verbose: bool = False
+    ) -> 'DataFrameContinuous':
+        df = base.merge(
+            data_left=self,
+            data_right=data_right,
+            id_discrete=self._discrete_index,
+            id_continuous=self._continuous_index,
+            how=how,
+            remove_duplicates=remove_duplicates,
+            verbose=verbose
+        )
+        return self._return(df)
 
-def test_make_admissible(get_advanced_examples_dataframe_continuous):
-    _, df = get_advanced_examples_dataframe_continuous
-    assert not df.admissible
-    df = df.make_admissible()
-    assert df.admissible, df
-    assert isinstance(df, DataFrameContinuous), type(df)
+    def merge_event(self, data_right: pd.DataFrame, id_event) -> 'DataFrameContinuous':
+        df = base.merge_event(
+            data_left=self,
+            data_right=data_right,
+            id_discrete=self._discrete_index,
+            id_continuous=self._continuous_index,
+            id_event=id_event
+        )
+        return self._return(df)
 
+    def aggregate_duplicates(
+            self,
+            dict_agg: None | dict[str, list[Any]] = None,
+            verbose: bool = False
+    ) -> 'DataFrameContinuous':
+        df = base.aggregate_duplicates(
+            df=self,
+            id_discrete=self._discrete_index,
+            id_continuous=self._continuous_index,
+            dict_agg=dict_agg,
+            verbose=verbose
+        )
+        return self._return(df)
 
-def test_create_continuity(get_advanced_examples_dataframe_continuous):
-    _, df = get_advanced_examples_dataframe_continuous
-    df_new = df.create_continuity(limit=50)
-    assert len(df_new) > len(df), df_new
-    df_new = df.create_continuity(limit=1)
-    assert len(df_new) == len(df), df_new
-    assert isinstance(df_new, DataFrameContinuous), type(df_new)
+    def aggregate_continuous_data(
+            self,
+            target_size: int,
+            dict_agg: None | dict[str, list[Any]] = None,
+            verbose: bool = False
+    ) -> 'DataFrameContinuous':
+        df = base.aggregate_continuous_data(
+                df=self,
+                id_discrete=self._discrete_index,
+                id_continuous=self._continuous_index,
+                target_size=target_size,
+                dict_agg=dict_agg,
+                verbose=verbose
+        )
+        return self._return(df)
 
+    def split_segment(
+            self,
+            target_size: int,
+            columns_sum_aggregation: list[str] = None,
+            verbose: bool = False
+    ) -> 'DataFrameContinuous':
+        df = base.split_segment(
+            df=self,
+            id_discrete=self._discrete_index,
+            id_continuous=self._continuous_index,
+            target_size=target_size,
+            columns_sum_aggregation=columns_sum_aggregation,
+            verbose=verbose
+        )
+        return self._return(df)
 
-def test_crep_merge(get_examples_dataframe_continuous):
-    df_left, df_right = get_examples_dataframe_continuous
-    res_internal_method = df_left.crep_merge(
-        data_right=df_right,
-        how="outer"
-    )
-    res_external_method = base.merge(
-        data_left=df_left,
-        data_right=df_right,
-        id_discrete=["id"],
-        id_continuous=["t1", "t2"],
-        how="outer"
-    )
-    assert str(res_internal_method) == str(res_external_method), (res_internal_method, res_external_method)
-    assert isinstance(res_internal_method, DataFrameContinuous), type(res_internal_method)
+    def homogenize(
+            self,
+            target_size: int,
+            method:  Literal["agg", "split"] | list[Literal["agg", "split"]] | set[Literal["agg", "split"]] | None = None,
+            dict_agg: dict[str, list[Any]] | None = None,
+            strict_size: bool = False,
+            verbose: bool = False
+    ) -> 'DataFrameContinuous':
+        df = base.homogenize_within(
+            df=self,
+            id_discrete=self._discrete_index,
+            id_continuous=self._continuous_index,
+            target_size=target_size,
+            method=method,
+            dict_agg=dict_agg,
+            strict_size=strict_size,
+            verbose=verbose
+        )
+        return self._return(df)
 
+    def aggregate_on_segmentation(
+            self,
+            df_segmentation: pd.DataFrame,
+            dict_agg: dict[str, list[str]] | None = None
+    ) -> 'DataFrameContinuous':
+        if len(df_segmentation.columns) > len(self._discrete_index) + len(self._continuous_index):
+            warnings.warn("df_segmentation contains more columns than necessary. "
+                          "Other columns than discrete or continuous indices are dropped.")
+            df_segmentation = df_segmentation[[*self._discrete_index, *self._continuous_index]]
+        df = base.aggregate_on_segmentation(
+            df_segmentation=df_segmentation,
+            df_data=self,
+            id_discrete=self._discrete_index,
+            id_continuous=self._continuous_index,
+            dict_agg=dict_agg,
+        )
+        return self._return(df)
 
-def test_merge_event(get_examples_dataframe_continuous):
-    df, _ = get_examples_dataframe_continuous
-    event_data = pd.DataFrame({"id": [1, 2], "pk": [4, 105]})
-    res_internal_method = df.merge_event(
-        data_right=event_data,
-        id_event="pk"
-    )
-    res_external_method = base.merge_event(
-        data_left=df,
-        data_right=event_data,
-        id_discrete=["id"],
-        id_continuous=["t1", "t2"],
-        id_event="pk"
-    )
-    assert str(res_internal_method) == str(res_external_method), (res_internal_method, res_external_method)
-    assert isinstance(res_internal_method, DataFrameContinuous), type(res_internal_method)
+    @property
+    def discrete_index(self):
+        return self._discrete_index
 
+    @property
+    def continuous_index(self):
+        return self._continuous_index
 
-def test_aggregate_duplicates(get_advanced_examples_dataframe_continuous):
-    _, df = get_advanced_examples_dataframe_continuous
-    df = tools.build_admissible_data(
-        df=df,
-        id_discrete=["id"],
-        id_continuous=["t1", "t2"]
-    )
-    df = DataFrameContinuous(df, discrete_index=["id"], continuous_index=["t1", "t2"])
-    res_internal_method = df.aggregate_duplicates()
-    res_external_method = base.aggregate_duplicates(
-        df=df,
-        id_discrete=["id"],
-        id_continuous=["t1", "t2"]
-    )
-    assert str(res_internal_method) == str(res_external_method), (res_internal_method, res_external_method)
-    assert isinstance(res_internal_method, DataFrameContinuous), type(res_internal_method)
-
-
-def test_split_segment(get_examples_dataframe_continuous):
-    df, _ = get_examples_dataframe_continuous
-    res_internal_method = df.split_segment(
-        target_size=10
-    )
-    res_external_method = base.split_segment(
-        df=df,
-        id_discrete=["id"],
-        id_continuous=["t1", "t2"],
-        target_size=10,
-    )
-    assert str(res_internal_method) == str(res_external_method), (res_internal_method, res_external_method)
-    assert isinstance(res_internal_method, DataFrameContinuous), type(res_internal_method)
-
-
-def test_homogenize(get_examples_dataframe_continuous):
-    df, _ = get_examples_dataframe_continuous
-    res_internal_method = df.homogenize(
-        target_size=50
-    )
-    res_external_method = base.homogenize_within(
-        df=df,
-        id_discrete=["id"],
-        id_continuous=["t1", "t2"],
-        target_size=50,
-    )
-    print(res_internal_method)
-    print(res_external_method)
-    assert str(res_internal_method) == str(res_external_method), (res_internal_method, res_external_method)
-    assert isinstance(res_internal_method, DataFrameContinuous), type(res_internal_method)
-
-
-def test_aggregate_on_segmentation(get_examples_dataframe_continuous):
-    df, _ = get_examples_dataframe_continuous
-    df_data = df.homogenize(
-        target_size=20
-    )
-    df_segmentation = df.split_segment(
-        target_size=50,
-    )
-    df_segmentation = df_segmentation[["id", "t1", "t2"]]
-    res_internal_method = df_data.aggregate_on_segmentation(
-        df_segmentation=df_segmentation,
-        dict_agg={"sum": ["data1"]}
-    )
-    res_external_method = base.aggregate_on_segmentation(
-        df_segmentation=df_segmentation,
-        df_data=df_data,
-        id_discrete=["id"],
-        id_continuous=["t1", "t2"],
-        dict_agg={"sum": ["data1"]}
-    )
-    assert str(res_internal_method) == str(res_external_method), (res_internal_method, res_external_method)
-    assert isinstance(res_internal_method, DataFrameContinuous), type(res_internal_method)
+    @property
+    def admissible(self):
+        return tools.admissible_dataframe(
+            self,
+            self._discrete_index,
+            self._continuous_index
+        )

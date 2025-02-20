@@ -6,6 +6,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from pandas.plotting import andrews_curves
 
 from crep import base
 from crep import (merge, aggregate_constant, aggregate_duplicates, aggregate_on_segmentation)
@@ -81,6 +82,7 @@ def test_merge_basic_empty_id_discrete(get_examples):
     assert ret.equals(ret_th)
     assert ret_l.equals(ret_th_l)
 
+
 def test__merge(get_advanced_examples):
     df_left, df_right = get_advanced_examples
 
@@ -110,6 +112,24 @@ def test_aggregate_constant(get_examples):
     ret_th.index = ret.index
     assert len(ret) < len(df_left)
     assert ret_th.equals(ret)
+
+
+def test_aggregate_duplicates():
+    df = pd.DataFrame({"discr": [1000, 1000, 1000, 1000],
+                       "cont1": [50, 50, 50, 100],
+                       "cont2": [100, 100, 100, 150],
+                       "quantity": [1, 0, 0.5, 1],
+                       "objet": ["A", "B", "A", "B"]})
+    df_test = base.aggregate_duplicates(
+        df,
+        id_discrete=["discr"],
+        id_continuous=["cont1", "cont2"],
+        dict_agg=None,
+        verbose=True
+    )
+    assert 0.5 in list(df_test["mean_quantity"]) and \
+           "A" in list(df_test["mode_objet"]) and \
+            len(df_test) == 2, "\n" + str(df_test)
 
 
 def test_merge_duplicates(get_examples):

@@ -8,6 +8,11 @@ from typing import Any, Iterable, Literal
 
 import numpy as np
 import pandas as pd
+import polars
+import polars as pl
+
+# from tqdm.auto import tqdm
+# tqdm.pandas()
 
 
 def build_admissible_data(
@@ -218,7 +223,7 @@ def reorder_columns(df: pd.DataFrame, id_discrete: list[Any], id_continuous: [An
 
 
 def name_simplifier(names: list[str]):
-    list_agg_op = ["mean", "max", "min", "sum"]
+    list_agg_op = ["mean", "max", "min", "sum", "mode"]
     new_names = []
     for n in names:
         n = n.split("_")
@@ -291,24 +296,159 @@ def compute_cumulated_length(
     return cumul
 
 
-def weighted_mode(df: pd.DataFrame, weights: pd.Series):
-    """ weights can be the length of the segments """
-    output = {}
-    for col in df.columns:
-        weights.index = df[col]
-        vc = df[col].value_counts()
-        # applies weights to value_counts Series
-        for idx in vc.index:
-            mask = weights.index == idx
-            vc.loc[idx] *= weights.loc[mask].sum()
-        vc = vc.sort_values(ascending=False)
-        # detects ex-aequo
-        mask = vc == vc.iloc[0]
-        mode = list(vc.index[mask])
-        mode = ", ".join(mode)
-        # assign mode to output dict
-        output[col] = mode
-    return pd.Series(output)
+# from sklearn.utils.extmath import weighted_mode
+# def weighted_mode_sklearn(df: pd.DataFrame, weights: pd.Series):
+#     """ weights can be the length of the segments """
+#     output = {}
+#     for col in df.columns:
+#         output[col] = weighted_mode(df[col], w=weights)[0][0]
+#     return pd.Series(output)
+
+
+# def concretize_aggregation_pandas(
+#         df: pd.DataFrame,
+#         id_discrete: list[Any],
+#         id_continuous: [Any, Any],
+#         dict_agg: dict[str, list[Any]] | None,
+#         add_group_by: Any | list[Any] = None,
+#         verbose: bool = False
+# ) -> pd.DataFrame:
+#     """
+#     Groupby + aggregation operations
+#
+#     Parameters
+#     ----------
+#     df : pandas dataframe
+#         without duplicated rows or overlapping rows
+#     id_discrete : list
+#         discrete columns (object or categorical)
+#     id_continuous : list of 2 column names
+#         continuous columns that delimit the segments' start and end
+#     dict_agg: dict, keys: agg operator, values: list of columns or None,
+#         specify which aggregation operator to apply for which column. If None, default is mean for all columns.
+#         id_continuous, id_discrete and add_group_by columns don't need to be specified in the dictionary
+#     add_group_by : optional. column name or list of column names
+#         Additional columns to consider when grouping by
+#     verbose: boolean
+#         whether to print shape of df and if df is admissible at the end of the function.
+#
+#     Returns
+#     -------
+#     df : pandas series with integers
+#
+#     Raises
+#     ------
+#     Exception
+#         When the dataframe df passed in argument is not admissible i.e. it contains overlapping rows and or duplicates
+#     """
+#     if not admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous):
+#         raise Exception("The dataframe is not admissible. Consider using aggregate_duplicates() and "
+#                         "crep.tools.build_admissible_data() if you want to make the dataframe admissible.")
+#
+#     cumul_ = cumul_length(df, id_continuous=id_continuous)
+#
+#     drop_cols = set()  # columns that should be removed at the end ot the process
+#     df_gr = []  # list of dataframes that will further be concatenated
+#     col_names = []  # names of new columns
+#
+#     group_by = id_discrete
+#     if type(add_group_by) is str:
+#         group_by = group_by + [add_group_by]
+#     elif type(add_group_by) is list:
+#         group_by = group_by + add_group_by
+#
+#     if dict_agg is None:
+#         warnings.warn("dict_agg not specified. Default aggregation operator set to 'mean' for all numerical features"
+#                       " and to 'mode' for categorical features.")
+#         columns = [col for col in df.columns if col not in [*group_by, *id_discrete, *id_continuous]]
+#         numerical_columns = list(df[columns].select_dtypes("number").columns)
+#         categorical_columns = list(df[columns].select_dtypes("object").columns)
+#         dict_agg = {}
+#         if len(numerical_columns) > 0:
+#             dict_agg = {"mean": numerical_columns}
+#         if len(categorical_columns) > 0:
+#             dict_agg["mode"] = categorical_columns
+#
+#     # define id_continuous agg operators
+#     if "min" in dict_agg.keys():
+#         dict_agg["min"].append(id_continuous[0])
+#     else:
+#         dict_agg["min"] = [id_continuous[0]]
+#     if "max" in dict_agg.keys():
+#         dict_agg["max"].append(id_continuous[1])
+#     else:
+#         dict_agg["max"] = [id_continuous[1]]
+#
+#     for i, items in enumerate(dict_agg.items()):
+#         k, v = items
+#         # Means are weighted by the length of the segments. Sums are not
+#         # To apply weights: mean = sum of (variable * length of segment) / sum of lengths of segments
+#         if k == "mode":
+#             # df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
+#             # data = df[group_by + v + ["__diff__"]].groupby(by=group_by).progress_apply(
+#             #     lambda df: weighted_mode(df=df[v], weights=df["__diff__"])
+#             # ).reset_index().drop(group_by, axis=1)
+#             df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
+#             df_weights = df.groupby(by=group_by)
+#             data = []
+#             for col in v:
+#                 mode = df_weights.apply(lambda x: _mode_helper(x, col))
+#                 data.append(pd.Series(mode.squeeze()))
+#             data = pd.concat(data, axis=1)
+#             data.columns = v
+#             data = data.reset_index(drop=True)
+#             df_gr.append(data)
+#             drop_cols.add("__diff__")
+#         elif k == "mean":
+#             # divider
+#             df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
+#             divider = pd.concat([df["__diff__"]] * len(v), axis=1)
+#             divider.columns = v
+#             divider = pd.concat([df[group_by], divider], axis=1)
+#             divider = divider.groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1)
+#             # mean calculation
+#             df[v] = df[v].mul(df["__diff__"], axis=0)
+#             data = df[group_by + v].groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1) / divider
+#             df_gr.append(data)
+#             drop_cols.add("__diff__")
+#         else:
+#             data = df[group_by + v].groupby(by=group_by).agg(k).reset_index().drop(group_by, axis=1)
+#             df_gr.append(data)
+#         col_names += [f"{k}_" + col for col in v]
+#         for col in v:
+#             drop_cols.add(col)
+#
+#     # concatenation of all groupby dataframes
+#     df_gr = pd.concat(df_gr, axis=1)
+#     df_gr.columns = name_simplifier(col_names)
+#     df = df.drop(list(drop_cols), axis=1)
+#     df = df.drop_duplicates(group_by).reset_index(drop=True)
+#     df = pd.concat([df, df_gr], axis=1)
+#     # drop unnecessary columns (those that were processed in group_by)
+#
+#     df = df.rename(columns={f"min_{id_continuous[0]}": id_continuous[0], f"max_{id_continuous[1]}": id_continuous[1]})
+#
+#     if verbose:
+#         print("post concretize_agg. Admissible:",
+#               admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous))
+#         print(df.shape)
+#         c = cumul_length(df, id_continuous=id_continuous)
+#         print("cumulative length post:", c, "diff pre-post:", cumul_ - c)
+#
+#     return df
+
+
+# def _mode_helper_polars(col):
+#     try:
+#         return pl.col(col).map_elements(
+#             lambda x: x[0] if len(x) > 0 else np.nan,
+#             return_dtype=schema[col.replace()]
+#         ).alias(col)
+#     except:
+#         print(f"Error processing column '{col}'")
+#         return pl.col(col).map_elements(
+#             lambda x: x[0] if len(x) > 0 else np.nan
+#         ).alias(col)
 
 
 def concretize_aggregation(
@@ -354,8 +494,8 @@ def concretize_aggregation(
     cumul_ = cumul_length(df, id_continuous=id_continuous)
 
     drop_cols = set()  # columns that should be removed at the end ot the process
-    df_gr = []  # list of dataframes that will further be concatenated
-    col_names = []  # names of new columns
+    df_mean = None  # list of dataframes that will further be concatenated
+    df_other = None
 
     group_by = id_discrete
     if type(add_group_by) is str:
@@ -385,43 +525,64 @@ def concretize_aggregation(
     else:
         dict_agg["max"] = [id_continuous[1]]
 
-    for i, items in enumerate(dict_agg.items()):
-        k, v = items
-        # Means are weighted by the length of the segments. Sums are not
-        # To apply weights: mean = sum of (variable * length of segment) / sum of lengths of segments
-        if k == "mode":
-            df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
-            data = df[group_by + v + ["__diff__"]].groupby(by=group_by).apply(
-                lambda df: weighted_mode(df=df[v], weights=df["__diff__"])
-            ).reset_index().drop(group_by, axis=1)
-            df_gr.append(data)
-            drop_cols.add("__diff__")
-        elif k == "mean":
-            # divider
-            df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
-            divider = pd.concat([df["__diff__"]] * len(v), axis=1)
-            divider.columns = v
-            divider = pd.concat([df[group_by], divider], axis=1)
-            divider = divider.groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1)
-            # mean calculation
-            df[v] = df[v].mul(df["__diff__"], axis=0)
-            data = df[group_by + v].groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1) / divider
-            df_gr.append(data)
-            drop_cols.add("__diff__")
-        else:
-            data = df[group_by + v].groupby(by=group_by).agg(k).reset_index().drop(group_by, axis=1)
-            df_gr.append(data)
-        col_names += [f"{k}_" + col for col in v]
+    # specific for polars implementation. Keys should absolutely exist
+    for agg_type in ["mean", "max", "min", "sum", "mode"]:
+        if agg_type not in dict_agg:
+            dict_agg[agg_type] = []
+
+    df_pl = pl.DataFrame(df)
+    if len(dict_agg["mean"]) > 0:
+        v = dict_agg["mean"]
+        df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
+        divider = pd.concat([df["__diff__"]] * len(v), axis=1)
+        divider.columns = v
+        divider = pd.concat([df[group_by], divider], axis=1)
+        divider = divider.groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1)
+        # mean calculation
+        df[v] = df[v].mul(df["__diff__"], axis=0)
+        data = df[group_by + v].groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1) / divider
+        data.columns = "mean_" + pd.Series(data.columns)
+        df_core = df[group_by].drop_duplicates().reset_index(drop=True)
+        data = pd.concat([df_core, data], axis=1)
+        df_mean = data
+        drop_cols.add("__diff__")
         for col in v:
             drop_cols.add(col)
 
+    # other than means
+    columns = list(set(group_by + dict_agg["max"] + dict_agg["min"] + dict_agg["sum"] + dict_agg["mode"]))
+    schema = df_pl.schema
+    data = df_pl[columns].group_by(group_by).agg(
+        pl.col(dict_agg["max"]).max().name.prefix("max_"),
+        pl.col(dict_agg["min"]).min().name.prefix("min_"),
+        pl.col(dict_agg["sum"]).sum().name.prefix("sum_"),
+        pl.col(dict_agg["mode"]).drop_nulls().drop_nans().mode().name.prefix("mode_"),
+    )
+    mode_columns = [col for col in data.columns if "mode_" in col]
+    if len(mode_columns) > 0:
+        data = data.with_columns(
+            pl.col(col_).map_elements(
+                lambda x: x[0] if len(x) > 0 else None, return_dtype=schema[col_.replace("mode_", "", 1)]
+            ).alias(col_)
+            for col_ in mode_columns
+        )
+    data = pd.DataFrame(data, columns=data.columns)
+    data = data.fillna(np.nan)
+    df_other = data
+    for col in columns:
+        if col not in group_by:
+            drop_cols.add(col)
+
     # concatenation of all groupby dataframes
-    df_gr = pd.concat(df_gr, axis=1)
-    df_gr.columns = name_simplifier(col_names)
     df = df.drop(list(drop_cols), axis=1)
     df = df.drop_duplicates(group_by).reset_index(drop=True)
-    df = pd.concat([df, df_gr], axis=1)
-    # drop unnecessary columns (those that were processed in group_by)
+
+    if df_mean is not None:
+        df_mean.columns = name_simplifier(list(df_mean.columns))
+        df = df.merge(right=df_mean, how="left", on=group_by)
+    if df_other is not None:
+        df_other.columns = name_simplifier(list(df_other.columns))
+        df = df.merge(right=df_other, how="left", on=group_by)
 
     df = df.rename(columns={f"min_{id_continuous[0]}": id_continuous[0], f"max_{id_continuous[1]}": id_continuous[1]})
 
@@ -433,6 +594,7 @@ def concretize_aggregation(
         print("cumulative length post:", c, "diff pre-post:", cumul_ - c)
 
     return df
+
 
 
 def n_cut_finder(
@@ -598,6 +760,3 @@ def clusterize(
 
 def sort(df: pd.DataFrame, id_discrete: list[Any], id_continuous: [Any, Any]) -> pd.DataFrame:
     return df.sort_values(by=[*id_discrete, *id_continuous])
-
-
-
