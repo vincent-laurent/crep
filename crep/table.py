@@ -157,7 +157,7 @@ class DataFrameContinuous(pd.DataFrame):
             df = df.loc[mask, :].reset_index(drop=True)
         return self._return(df)
 
-    def make_admissible(self, verbose=False):
+    def make_admissible(self, verbose=False, allow_agg_dupl=True):
         df = self
         if not self.admissible:
             df = tools.build_admissible_data(
@@ -170,7 +170,7 @@ class DataFrameContinuous(pd.DataFrame):
                 id_discrete=self._discrete_index,
                 id_continuous=self._continuous_index
         )
-        if not is_admissible and sum(df.duplicated(subset=self._discrete_index + self._continuous_index)) > 0:
+        if not is_admissible and sum(df.duplicated(subset=self._discrete_index + self._continuous_index)) > 0 and allow_agg_dupl:
             warnings.warn("Function aggregate_duplicates used with 'mean' as default aggregation operator "
                           "in order to make the dataframe admissible.")
             df = base.aggregate_duplicates(

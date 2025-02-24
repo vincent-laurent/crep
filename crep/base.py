@@ -981,7 +981,9 @@ def aggregate_duplicates(
     ).reset_index(drop=True)
 
     # =============== recombining df_dupl & df_no_dupl ==================
-    df_no_dupl = df_no_dupl.rename(columns=dict_renaming)
+    df_no_dupl = df_no_dupl.rename(columns=dict_renaming).reset_index(drop=True)
+    df_dupl = df_dupl.reset_index(drop=True)
+
     df = pd.concat([df_dupl, df_no_dupl], axis=0)
     df = df.rename(
         columns={f"min_{id_continuous[0]}": id_continuous[0], f"max_{id_continuous[1]}": id_continuous[1]}
