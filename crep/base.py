@@ -12,7 +12,6 @@ import polars as pl
 
 
 from crep import tools
-from crep.tools import concretize_aggregation
 
 
 def merge(
@@ -1525,7 +1524,7 @@ def aggregate_on_segmentation(
     )
 
     # groupby based on the settings in dict_agg and based on grouping variable __id__
-    df_merge = concretize_aggregation(
+    df_merge = tools.concretize_aggregation(
         df=df_merge,
         id_discrete=id_discrete,
         id_continuous=id_continuous,

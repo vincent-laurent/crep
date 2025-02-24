@@ -4,836 +4,239 @@
 # You may obtain a copy of the License at
 #     https://cecill.info/
 import warnings
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 import numpy as np
 import pandas as pd
 import polars as pl
 
 
-from crep import tools
-from crep.tools import concretize_aggregation
+def build_admissible_data(
+        df: pd.DataFrame,
+        id_discrete: Iterable[Any],
+        id_continuous: [Any, Any]
+) -> pd.DataFrame:
+    df.index = range(len(df.index))
+    df_non_admissible = sample_non_admissible_data(df, id_discrete, id_continuous).__deepcopy__()
+    df_non_admissible = create_zones(df_non_admissible, id_discrete, id_continuous)
 
+    df_non_admissible["__id__"] = range(len(df_non_admissible))
+    df_add_non_admissible = df_non_admissible[[*id_discrete, *id_continuous, "__id__", "__zone__"]]
+    all_id_continuous = df_non_admissible[id_continuous[0]].to_list()
+    all_id_continuous += df_non_admissible[id_continuous[1]].to_list()
 
-def merge(
-        data_left: pd.DataFrame,
-        data_right: pd.DataFrame,
-        id_continuous: [Any, Any],
-        id_discrete: iter,
-        how: str,
-        remove_duplicates: bool = False,
-        verbose=False) -> pd.DataFrame:
-    """
-    This function aims at creating merge data frame
+    # create good segmentation
+    df_ret = pd.concat([df_non_admissible[[*id_discrete, "__zone__"]]] * 2)
+    df_ret[id_continuous[0]] = all_id_continuous
+    df_ret["__disc__"] = compute_discontinuity(df_ret, id_discrete, id_continuous)
+    df_ret = df_ret.sort_values(by=[*id_discrete, id_continuous[0]])
+    df_ret[id_continuous[1]] = - df_ret[id_continuous[0]].diff(periods=-1) + df_ret[id_continuous[0]]
+    df_ret = df_ret.dropna().drop(columns="__disc__")
+    df_ret = df_ret.drop_duplicates().dropna()
+    df_ret = df_ret[df_ret[id_continuous[1]] != df_ret[id_continuous[0]]]
+    df_ret = df_ret.sort_values(by=[*id_discrete, id_continuous[0]])
+    df_ret[id_continuous[1]] = df_ret[id_continuous[1]].astype(df[id_continuous[1]].dtype)
 
-    Parameters
-    ----------
+    df_ret = pd.merge(df_ret, df_add_non_admissible,
+                      on=list(id_discrete) + ["__zone__"], suffixes=("", "_tmp"))
+    id_continuous_tmp = [str(i) + "_tmp" for i in id_continuous]
+    c = df_ret[id_continuous[0]] < df_ret[id_continuous_tmp[1]]
+    c &= df_ret[id_continuous[1]] > df_ret[id_continuous_tmp[0]]
+    df_ret = df_ret.loc[c].drop(columns=id_continuous_tmp)
 
-    data_left
-        data frame with continuous representation
-    data_right
-        data frame with continuous representation
-    id_continuous
-        iterable of length two that delimits the edges of the segment
-    id_discrete: iterable
-        iterable that lists all the columns on which to perform a classic merge
-    how: str
-        how to make the merge, possible options are
+    df_ret = pd.merge(df_ret, df_non_admissible.drop(columns=[*id_discrete, *id_continuous, "__zone__"]), on="__id__"
+                      ).drop(columns=["__id__", "__zone__"])
+    df_ret = df_ret.astype(df_non_admissible.dtypes.drop(["__id__", "__zone__"]))
 
-        - 'left'
-        - 'right'
-        - 'inner'
-        - 'outer'
-
-    remove_duplicates
-        whether to remove duplicates
-    verbose
-    """
-    __check_args_merge(data_left, data_right,
-                       id_continuous, id_discrete, how)
-
-    data_left = data_left.__deepcopy__()
-    data_right = data_right.__deepcopy__()
-    id_continuous = list(id_continuous)
-    id_discrete = list(id_discrete)
-
-    id_discrete_left = [col for col in data_left.columns if col in id_discrete]
-    id_discrete_right = [col for col in data_right.columns if col in id_discrete]
-    data_left, data_right = __fix_discrete_index(
-        data_left, data_right,
-        id_discrete_left,
-        id_discrete_right)
-    data_left.index = range(len(data_left))
-    data_right.index = range(len(data_right))
-    df_merge = __merge_index(data_left, data_right,
-                             id_discrete=id_discrete,
-                             id_continuous=id_continuous)
-    df = pd.merge(
-        df_merge,
-        data_left[list(set(data_left.columns).difference(df_merge.columns))],
-        left_on="left_idx", right_index=True, how="left")
-    df = pd.merge(
-        df,
-        data_right[list(set(data_right.columns).difference(df_merge.columns))],
-        left_on="right_idx", right_index=True, how="left")
-
-    if how == "left":
-        df = df.loc[df["left_idx"] != -1]
-    if how == "right":
-        df = df.loc[df["right_idx"] != -1]
-    if how == "inner":
-        df = df.loc[(df["right_idx"] != -1) & (df["left_idx"] != -1)]
-
-    df = df.drop(["left_idx", "right_idx"], axis=1)
-    df.index = range(len(df))
-    if remove_duplicates:
-        df = suppress_duplicates(df, id_discrete=id_discrete,
-                                 id_continuous=id_continuous)
-    if verbose:
-        print("[merge] nb rows left  table frame ", data_left.shape[0])
-        print("[merge] nb rows right table frame ", data_right.shape[0])
-        print("[merge] nb rows outer table frame ", df.shape[0])
-    return df
-
-
-def unbalanced_merge(
-        data_admissible: pd.DataFrame,
-        data_not_admissible: pd.DataFrame,
-        id_discrete: iter,
-        id_continuous: [Any, Any]) -> pd.DataFrame:
-    """
-    Merge admissible and non-admissible dataframes based on discrete and continuous identifiers.
-
-    Parameters
-    ----------
-    data_admissible : pd.DataFrame
-        DataFrame containing admissible data.
-    data_not_admissible : pd.DataFrame
-        DataFrame containing non-admissible data.
-    id_discrete : list
-        List of column names representing discrete identifiers.
-    id_continuous : list
-        List of column names representing continuous identifiers.
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame resulting from the unbalanced merge of admissible and non-admissible data.
-
-    Notes
-    -----
-    The function performs the following steps:
-    1. Combines and sorts the admissible and non-admissible data based on the identifiers.
-    2. Resolves overlaps and conflicts between the admissible and non-admissible data.
-    3. Merges and returns the final DataFrame.
-    """
-    # assert tools.admissible_dataframe(data_admissible, id_discrete, id_continuous)
-    df_idx_w = data_admissible[[*id_discrete, *id_continuous]].copy()
-    df_idx_s = data_not_admissible[[*id_discrete, *id_continuous]].copy()
-    df_idx_w["__t__"] = True
-    df_idx_s["__t__"] = False
-
-    df_idx = pd.concat((df_idx_w, df_idx_s))
-    df_idx = df_idx.sort_values([*id_discrete, id_continuous[0], "__t__"],
-                                ascending=[*[True] * len(id_discrete), True, False])
-
-    df_idx["__id2__"] = np.nan
-    df_idx["__id1__"] = np.nan
-    df_idx.loc[df_idx["__t__"], "__id2__"] = df_idx.loc[df_idx["__t__"], id_continuous[1]]
-    df_idx.loc[df_idx["__t__"], "__id1__"] = df_idx.loc[df_idx["__t__"], id_continuous[0]]
-    df_idx["__id2__"] = df_idx["__id2__"].ffill()
-    df_idx["__id1__"] = df_idx["__id1__"].ffill()
-
-    c_resolve = df_idx["__id2__"] < df_idx[id_continuous[1]]
-    c_out = df_idx["__id2__"] < df_idx[id_continuous[0]]
-    created_columns = ["__t__", "__id2__", "__id1__"]
-
-    # =================
-    # Encompassed data
-    df_admissible = df_idx[~c_resolve].copy()
-    df_admissible_ret = pd.merge(df_admissible, data_admissible, how='inner',
-                                 left_on=[*id_discrete, "__id1__", "__id2__"], right_on=[*id_discrete, *id_continuous],
-                                 suffixes=("", "__init"))
-    df_admissible_ret = df_admissible_ret[~df_admissible_ret.__t__]
-    df_admissible_ret = df_admissible_ret.drop(
-        columns=[*created_columns, id_continuous[0] + "__init", id_continuous[1] + "__init"])
-    df_admissible_ret = pd.merge(df_admissible_ret, data_not_admissible, on=[*id_discrete, *id_continuous], how="left")
-
-    # =================
-    # To resolve data
-    df_to_resolve = df_idx[c_resolve & ~c_out].copy()
-    old = [f"{id_continuous[0]}__", f"{id_continuous[1]}__"]
-    df_to_resolve[old] = df_to_resolve[id_continuous]
-    df_to_resolve_admissible = tools.build_admissible_data(df_to_resolve.drop(columns=created_columns), id_discrete,
-                                                           id_continuous)
-
-    df_to_resolve_no_d = df_to_resolve_admissible.drop_duplicates(subset=[*id_discrete, *id_continuous])
-    if len(df_to_resolve_no_d) > 0:
-        df_to_resolve_no_d = merge(
-            df_to_resolve_no_d,
-            data_admissible, id_discrete=id_discrete, id_continuous=id_continuous,
-            how="inner")
-        df_ret = pd.merge(
-            df_to_resolve_no_d,
-            data_not_admissible,
-            left_on=[*id_discrete, *old],
-            right_on=[*id_discrete, *id_continuous], how="inner", suffixes=("", "__")
-        )
-        df_ret = df_ret[df_admissible_ret.columns]
-    else:
-        df_ret = pd.DataFrame([], columns=df_admissible_ret.columns)
-    # =================
-    # Out data
-    df_to_out = df_idx[c_resolve & c_out].copy().drop(columns=created_columns)
-    df_to_out = pd.merge(df_to_out, data_not_admissible, on=[*id_discrete, *id_continuous], how='inner')
-
-    df_ret_all = pd.concat((df_ret, df_admissible_ret, df_to_out), axis=0)
-    df_ret_all.index = range(len(df_ret_all))
-    df_ret_all = df_ret_all.sort_values(by=[*id_discrete, *id_continuous])
+    df_ret_all = df[~get_overlapping(df, id_discrete, id_continuous)]
+    df_ret_all = pd.concat((df_ret_all, df_ret))
+    df_ret_all = df_ret_all.sort_values(by=[*id_discrete, id_continuous[0]])
+    df_ret_all.index = range(len(df_ret_all.index))
     return df_ret_all
 
 
-def unbalanced_concat(
-        df1: pd.DataFrame,
-        df2: pd.DataFrame,
-        id_discrete: list[Any],
-        id_continuous: [Any, Any],
-        ignore_homogenize: bool = False,
-        verbose: bool = False
-) -> pd.DataFrame:
-    """
-    Concatenates the rows from two dataframes, and adjusts the lengths of the segments so that for each segment in the
-    first dataframe there is a segment in the second dataframes with the same id_continuous characteristics, and
-    vice versa. This function can handle duplicated rows in each other of the df, but not non-duplicated overlap.
-
-    Parameters
-    ----------
-    df1 : pandas dataframe
-    df2 : pandas dataframe
-    id_discrete : list
-        discrete columns (object or categorical)
-    id_continuous : list of 2 column names
-        continuous columns that delimit the segments' start and end
-    ignore_homogenize : optional. boolean
-        if True, ignore the homogenization function
-    verbose: optional. boolean
-        whether to print shape of df and if df is admissible at the end of the function.
-
-    Returns
-    -------
-    df:  pandas dataframe
-    """
-    # ensures that ratio of segment size between the dataframes does not exceed 2
-    df1_admissible = tools.admissible_dataframe(data=df1, id_discrete=id_discrete, id_continuous=id_continuous)
-    df2_admissible = tools.admissible_dataframe(data=df2, id_discrete=id_discrete, id_continuous=id_continuous)
-
-    if df1_admissible & df2_admissible:
-        warnings.warn("Both dataframes are admissible. Consider using crep.merge().")
-
-    if not ignore_homogenize:
-        df1, df2 = homogenize_between(
-            df1=df1,
-            df2=df2,
-            id_discrete=id_discrete,
-            id_continuous=id_continuous
-        )
-
-    r1 = (df2[id_continuous[1]] - df2[id_continuous[0]]).max() / (df1[id_continuous[1]] - df1[id_continuous[0]]).min()
-    r2 = (df1[id_continuous[1]] - df1[id_continuous[0]]).max() / (df2[id_continuous[1]] - df2[id_continuous[0]]).min()
-    if r1 > 2 or r2 > 2:
-        raise Exception("unbalanced_concat needs dataframes with segments size on a similar scale. "
-                        "Ratios of segments sizes between dataframes should not exceed 2.")
-
-    # assert tools.admissible_dataframe(data_admissible, id_discrete, id_continuous)
-    df_idx_w = df1.copy()
-    df_idx_s = df2.copy()
-    df_idx_w["__t__"] = True
-    df_idx_s["__t__"] = False
-
-    df_idx = pd.concat((df_idx_w, df_idx_s))
-    df_idx = df_idx.sort_values(
-        [*id_discrete, id_continuous[1], "__t__"],
-        ascending=[*[True] * len(id_discrete), True, False],
-    ).reset_index(drop=True)
-
-    # __new_seg__: bool, verifies whether the next line has the same id_discrete
-    mask = df_idx[id_discrete].eq(df_idx[id_discrete].shift(1))
-    df_idx["__new_seg__"] = ~((~mask).sum(axis=1) == 0)
-
-    df_idx["__id1__"] = df_idx[id_continuous[0]]
-    df_idx["__id2__"] = df_idx[id_continuous[1]]
-    df_idx["__id3__"] = df_idx[id_continuous[0]]
-    df_idx["__id1__"] = df_idx[id_continuous[0]].shift()
-    df_idx["__id2__"] = df_idx[id_continuous[1]].shift()
-    df_idx["__id3__"] = df_idx[id_continuous[0]].shift(-1)
-    df_idx.loc[df_idx["__new_seg__"], ["__id1__", "__id2__"]] = -1
-    df_idx.loc[df_idx["__new_seg__"].shift(-1).fillna(True), "__id3__"] = -1
-
-    mask = (~df_idx[[*id_discrete, *id_continuous]].eq(df_idx[[*id_discrete, *id_continuous]].shift())).sum(axis=1)
-    df_idx.loc[mask == 0, ["__id1__", "__id2__"]] = np.nan
-    df_idx.loc[(mask == 0).shift(-1).fillna(False), "__id3__"] = np.nan
-
-    df_idx[["__id1__", "__id2__"]] = df_idx[["__id1__", "__id2__"]].ffill()
-    df_idx["__id3__"] = df_idx[["__id3__"]].bfill()
-    df_idx[["__id1__", "__id2__", "__id3__"]] = df_idx[["__id1__", "__id2__", "__id3__"]].replace(-1, np.nan)
-
-    # segments out: discontinuity between line n and line n+1
-    c_out = pd.Series(
-        df_idx["__new_seg__"]
-        | (df_idx["__id2__"] < df_idx[id_continuous[0]])
-        | (df_idx[id_continuous[1]] < df_idx["__id2__"])  # impossible because of sort_values by id_continuous[1]
-        | (df_idx[id_continuous[0]] == df_idx["__id2__"])
-    )
-
-    c1_sup_id2 = df_idx[id_continuous[1]] > df_idx["__id2__"]
-
-    #   |------------|
-    #   |--------------------|
-    # segments line n-1 and line n start at the same point, but segment line n-1 ends before segment line n
-    c_resolve_1 = pd.Series((~c_out) & (df_idx[id_continuous[0]] == df_idx["__id1__"]) & c1_sup_id2)
-
-    #   |--------------------|
-    #          |--------------------|
-    # segments line n-1 starts before line n and segment line n-1 ends before segment line n
-    c_resolve_2 = pd.Series((~c_out) & (df_idx[id_continuous[0]] > df_idx["__id1__"]) & c1_sup_id2)
-
-    #   |--------------------|
-    #          |-------------|
-    # segment line n-1 starts before segment line n and segments line n-1 and line n end at the same point
-    c_resolve_3 = pd.Series(
-        (~c_out) & (df_idx[id_continuous[0]] > df_idx["__id1__"]) & (~c1_sup_id2) & ~df_idx["__id3__"].isna())
-
-    #        |----------|
-    #   |--------------------|
-    # segments line n-1 starts after line n and segment line n-1 ends before segment line n
-    c_resolve_4 = pd.Series((~c_out) & (df_idx[id_continuous[0]] < df_idx["__id1__"]) & c1_sup_id2)
-
-    #         |--------------|
-    #   |--------------------|
-    # segments line n-1 starts after line n and segments line n-1 and line n end at the same point
-    c_resolve_5 = pd.Series((~c_out) & (df_idx[id_continuous[0]] < df_idx["__id1__"]) & (~c1_sup_id2))
-    # neither of the above
-    c_uncov = ~(c_out | c_resolve_1 | c_resolve_2 | c_resolve_3.shift(-1).fillna(False) | c_resolve_4 | c_resolve_5)
-
-    created_columns = ["__new_seg__", "__id1__", "__id2__", "__id3__"]
-
-    # =================
-    # Resolve all
-    list_df_new = []
-
-    # c_resolve_1
-    #   |------------|                   =>   |------------|
-    #   |--------------------|           =>   |------------|-------|
-    df_new = df_idx.loc[c_resolve_1, :].copy()
-    df_temp = df_new.copy()
-    df_new[id_continuous[0]] = df_new["__id2__"]
-    df_temp[id_continuous[1]] = df_temp["__id2__"]
-    df_new = pd.concat([df_new, df_temp]).drop(created_columns, axis=1)
-    list_df_new.append(df_new)
-
-    # c_resolve_2
-    #   |--------------------|           =>   |------|-------------|
-    #          |--------------------|    =>          |-------------|------|
-    df_new = df_idx.loc[c_resolve_2, :].copy()
-    df_temp = df_new.copy()
-    mask = c_resolve_2.shift(-1).fillna(False) & (~df_idx["__id3__"].isna()) & (~c_resolve_4)
-    df_temp2 = df_idx.loc[mask, :].copy()
-    df_temp3 = df_idx.loc[mask, :].copy()
-    df_new[id_continuous[0]] = df_new["__id2__"]
-    df_temp[id_continuous[1]] = df_temp["__id2__"]
-    df_temp2[id_continuous[0]] = df_temp2["__id3__"]
-    df_temp3[id_continuous[1]] = df_temp2["__id3__"]
-    df_new = pd.concat([df_new, df_temp, df_temp2, df_temp3]).drop(created_columns, axis=1)
-    list_df_new.append(df_new)
-
-    # c_resolve_3
-    #   |--------------------|          =>   |------|-------------|
-    #          |-------------|          =>          |-------------|
-    mask = c_resolve_3.shift(-1).fillna(False)  # & ~c_resolve_4
-    df_new = df_idx.loc[mask, :].copy()
-    df_temp = df_new.copy()
-    df_new[id_continuous[0]] = df_new["__id3__"]
-    df_temp[id_continuous[1]] = df_temp["__id3__"]
-    df_new = pd.concat([df_new, df_temp]).drop(created_columns, axis=1)
-    list_df_new.append(df_new)
-
-    # c_resolve_4
-    #        |----------|              =>        |----------|
-    #   |--------------------|         =>   |----|----------|----|
-    df_new = df_idx.loc[c_resolve_4, :].copy()
-    df_temp = df_new.copy()
-    df_temp2 = df_new.copy()
-    df_new[id_continuous[1]] = df_new["__id1__"]
-    df_temp[id_continuous[0]] = df_temp["__id1__"]
-    df_temp[id_continuous[1]] = df_temp["__id2__"]
-    df_temp2[id_continuous[0]] = df_temp2["__id2__"]
-    df_new = pd.concat([df_new, df_temp, df_temp2]).drop(created_columns, axis=1)
-    list_df_new.append(df_new)
-
-    # c_resolve_5
-    #         |--------------|        =>         |--------------|
-    #   |--------------------|        =>   |-----|--------------|
-    df_new = df_idx.loc[c_resolve_5, :].copy()
-    df_temp = df_new.copy()
-    df_new[id_continuous[0]] = df_new["__id1__"]
-    df_temp[id_continuous[1]] = df_temp["__id1__"]
-    df_new = pd.concat([df_new, df_temp]).drop(created_columns, axis=1)
-    list_df_new.append(df_new)
-
-    # c_out corrections (see test_unbalanced_concat_case11)
-    c_out[c_out & (c_resolve_2.shift(-1) | c_resolve_3.shift(-1))] = False
-
-    df_res = pd.concat(
-        list_df_new + [df_idx.loc[c_out | c_uncov, :].drop(created_columns, axis=1)]
-    ).drop_duplicates(
-    ).sort_values(
-        [*id_discrete, id_continuous[1], "__t__", ],
-        ascending=[*[True] * len(id_discrete), True, False]
-    ).drop(
-        "__t__", axis=1
-    ).reset_index(drop=True)
-
-    if verbose:
-        print("post unbalanced_concat. Admissible:",
-              tools.admissible_dataframe(data=df_res, id_discrete=id_discrete, id_continuous=id_continuous))
-        print(df_res.shape)
-
-    return df_res
-
-
-def aggregate_constant(df: pd.DataFrame,
-                       id_discrete: iter,
-                       id_continuous: iter,
-                       ):
-    """
-    Parameters
-    ----------
-    df
-    id_discrete
-    id_continuous
-
-    Returns
-    -------
-    """
-    data_ = df.copy(deep=True)
-    dtypes = data_.dtypes
-    data_ = data_.sort_values([*id_discrete, *id_continuous])
-    # 1/ detect unnecessary segment
-    indexes = [*id_discrete, *id_continuous]
-    no_index = list(set(data_.columns).difference(indexes))
-    id1, id2 = id_continuous
-
-    disc = tools.compute_discontinuity(data_, id_discrete, id_continuous)
-    identical = False * np.ones_like(disc)
-
-    index = data_.index
-
-    data_1 = data_.loc[index[:-1], no_index].fillna(np.nan).values
-    data_2 = data_.loc[index[1:], no_index].fillna(np.nan).values
-
-    np_bool: np.array = np.equal(data_1, data_2)
-
-    res = pd.Series(np_bool.sum(axis=1), index=index[:-1])
-    res = pd.Series(res == len(no_index)).values
-
-    identical[:-1] = res
-    identical[:-1] = identical[:-1] & ~disc[1:]
-
-    n = identical.sum()
-    if n == 0:
-        return df
-    dat = pd.DataFrame(dict(
-        identical=identical,
-        keep=False * np.ones_like(disc)),
-        index=data_.index)
-
-    keep = list(set(np.where(identical)[0]).union(np.where(identical)[0] + 1))
-    dat.loc[dat.index[keep], "keep"] = True
-
-    data_merge = data_.sort_values([*id_discrete, *id_continuous])
-    data_merge[f"{id1}_new"] = np.nan
-    b = ~ dat["identical"]
-    b_disc = [True] + list(~dat["identical"].values[:-1])
-    data_merge.loc[b, f"{id2}_new"] = data_merge.loc[b, id2]
-    data_merge.loc[b_disc, f"{id1}_new"] = data_merge.loc[b_disc, id1]
-
-    data_merge[f"{id2}_new"] = data_merge[f"{id2}_new"].bfill()
-    data_merge[f"{id1}_new"] = data_merge[f"{id1}_new"].ffill()
-
-    data_merge = data_merge.drop(list(id_continuous), axis=1)
-    data_merge = data_merge.rename({f"{id1}_new": id1, f"{id2}_new": id2},
-                                   axis=1)
-    return data_merge[df.columns].drop_duplicates().astype(dtypes)
-
-
-def __merge_index(data_left,
-                  data_right,
-                  id_discrete,
-                  id_continuous,
-                  names=("left", "right")):
-    id_ = [*id_discrete, *id_continuous]
-    id_c = id_continuous
-
-    data_left = data_left.loc[:, id_].dropna()
-    data_right = data_right.loc[:, id_].dropna()
-    df_merge = __merge(data_left, data_right,
-                       id_discrete=id_discrete, id_continuous=id_c)
-    return df_merge
-
-
-def merge_event(
-        data_left: pd.DataFrame,
-        data_right: pd.DataFrame,
-        id_discrete: iter,
-        id_continuous: [Any, Any],
-        id_event
+def create_zones(
+        df: pd.DataFrame,
+        id_discrete: Iterable[Any],
+        id_continuous: [Any, Any]
 ):
     """
-    Assigns the details of events occurring at a specific points, in data_right, to the corresponding segment
-    in data_left.
+    Create overlapping zone identifiers in the DataFrame based on discrete and continuous ID columns.
 
     Parameters
     ----------
-    data_left : pd.DataFrame
-        The left dataframe to be merged.
-    data_right : pd.DataFrame
-        The right dataframe to be merged.
-    id_discrete : iterable
-        The list of column names representing discrete identifiers for sorting and merging
-        (e.g., categorical variables)
-    id_continuous : list of two elements (Any, Any)
-        A list with two elements representing the continuous index (e.g., time or numerical variables).
-        The first element is the column name of the continuous identifier used for sorting.
-    id_event:
-        the name of the column containing the exact localisation of the event
+    df : pd.DataFrame
+        The input DataFrame containing the df.
+    id_discrete : iter
+        An iterable of column names that are considered discrete identifiers.
+    id_continuous : iter
+        An iterable of column names that are considered continuous identifiers.
 
     Returns
     -------
     pd.DataFrame
-        A merged dataframe that combines `data_left` and `data_right`.
-
-    """
-    if not tools.admissible_dataframe(data=data_left, id_discrete=id_discrete, id_continuous=id_continuous):
-        raise Exception("The left dataframe is not admissible. Consider using aggregate_duplicates() and "
-                        "tools.build_admissible_data() if you want to make the dataframe admissible.")
-    else:
-        df1 = data_left.copy()
-        df2 = data_right.copy()
-        df1 = df1.fillna(1234.56789)
-        df1["__t__"] = True
-        df2["__t__"] = False
-        df = pd.concat([df1, df2], axis=0)
-        df.loc[df["__t__"], id_event] = df.loc[df["__t__"], id_continuous[1]]
-        df = df.sort_values(by=[*id_discrete, id_event]).reset_index(drop=True)
-
-        # ========== identify match with pk event in df2 and concerned row in df1 ==========
-        mask = (~df[id_discrete].eq(df[id_discrete].shift()))
-        df["__new_seg__"] = mask.sum(axis=1) > 0
-        df["__new_seg_b_"] = np.nan
-        df.loc[df["__t__"], "__new_seg_b_"] = df.loc[df["__t__"], "__new_seg__"]
-        df["__new_seg_b_"] = df["__new_seg_b_"].bfill()
-        df["__no_match__"] = False
-        df.loc[(~df["__t__"]) & df["__new_seg_b_"], "__no_match__"] = True
-
-        if df["__no_match__"].sum() > 1:
-            warnings.warn("Not all events in data_right could be associated to a segment in date_left.")
-            print(f"In merge_event, dropped: {df['__no_match__'].sum()}/{df2.shape[0]} rows")
-        df = df.loc[~df["__no_match__"], :].reset_index(drop=True)
-
-        # =========================== merge info from df1 and df2 ===========================
-        df.loc[~df["__t__"], id_continuous] = np.nan
-        df[df1.columns] = df[df1.columns].bfill()
-        df.loc[df["__t__"], id_event] = np.nan
-        df = df.replace(1234.56789, np.nan)
-
-        df = df.sort_values(
-            by=[*id_discrete, id_continuous[1], "__t__"],
-            ascending=[*[True] * len(id_discrete), True, False]
-        ).reset_index(drop=True)
-        df = df.drop(columns=[col for col in df.columns if "__" in col])
-
-        return df
-
-
-def create_regular_segmentation(
-        data: pd.DataFrame, length,
-        id_discrete: iter,
-        id_continuous: [Any, Any]
-) -> pd.DataFrame:
-    """
-    Creates a regular segmentation of a DataFrame based on specified discrete and continuous columns,
-    segmenting continuous values into equal-length intervals.
-
-    Parameters
-    ----------
-    data : pd.DataFrame
-        Input DataFrame containing the data to be segmented.
-    length : int
-        Length of each segment in the continuous interval. If set to 0, returns the original DataFrame.
-    id_discrete : iterable
-        Column names to be used as discrete identifiers for grouping data.
-    id_continuous : list of Any, Any
-        A list containing two continuous column names, where the first item represents the start value
-        and the second item represents the end value for the segmentation.
-
-    Returns
-    -------
-    pd.DataFrame
-        A new DataFrame with regular segments created based on the specified interval length and grouping columns.
-        The resulting DataFrame includes columns for the discrete identifiers, the continuous start and end values
-        for each segment.
+        The DataFrame with an additional '__zone__' column indicating the zone for each row.
 
     Notes
     -----
-    The function calculates the number of segments for each discrete group by dividing the interval between the
-    maximum and minimum continuous values by the given segment length. Segments are then evenly spaced within
-    this interval for each discrete group.
+    The function works by sorting the DataFrame based on the given discrete and continuous identifiers,
+    and then creating a zone identifier (`__zone__`) that groups rows based on specific conditions.
 
+    Steps:
+    1. Sort the DataFrame based on discrete identifiers and the second continuous identifier.
+    2. Assign a forward index (`__zf__`) based on the sorted order.
+    3. Sort the DataFrame based on discrete identifiers and the first continuous identifier.
+    4. Assign a backward index (`__zi__`) based on the sorted order.
+    5. Determine zones where the forward and backward indices are equal (`c_zone`).
+    6. Check if the start of a zone is greater than or equal to the end of the previous zone (`c_inner`).
+    7. Identify changes in discrete identifiers (`c_disc`).
+    8. Combine the conditions to create the final zone identifier (`__zone__`).
 
-    Raises
-    ------
-    ValueError
-        If `length` is not a positive integer.
+    Examples
+    --------
+    >>> df = {
+    ...     'id': [1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2],
+    ...     't1': [932, 996, 2395, 2395, 3033, 3628, 4126, 4140, 4154, 316263, 316263, 316471, 316471],
+    ...     't2': [2395, 2324, 3033, 3628, 3035, 4140, 4140, 5508, 5354, 316399, 316471, 317406, 317557],
+    ...     'LONGUEUR': [1463, 1328, 638, 1233, 2, 512, 14, 1368, 1200, 136, 208, 935, 1086],
+    ...     '__zone__': [0, 0, 1, 1, 1, 2, 2, 2, 2, 3, 3, 4, 4]
+    ... }
+    >>> df = pd.DataFrame(df)
+    >>> create_zones(df, ['id'], ['t1', 't2'])
     """
-    if length == 0:
-        return data
-    # For each couple we compute the number of segment given the length
-    df_disc_f = data.groupby(id_discrete)[id_continuous[1]].max().reset_index()
-    df_disc_d = data.groupby(id_discrete)[id_continuous[0]].min().reset_index()
-    df_disc = pd.merge(df_disc_d, df_disc_f, on=id_discrete)
+    df_out = df.__deepcopy__()
+    if "__zone__" in df.columns:
+        df_out = df_out.drop(columns='__zone__')
 
-    df_disc["nb_coupon"] = np.round((df_disc[id_continuous[1]] - df_disc[id_continuous[0]]) / length).astype(int)
-    df_disc["nb_coupon_cumsum"] = df_disc["nb_coupon"].cumsum()
-    df_disc["nb_coupon_cumsum0"] = 0
-    df_disc.loc[df_disc.index[1:], "nb_coupon_cumsum0"] = df_disc["nb_coupon_cumsum"].values[:-1]
+    df_out = df_out.sort_values([*id_discrete, id_continuous[1]])
+    df_out["__zf__"] = range(len(df_out))
+    df_out = df_out.sort_values([*id_discrete, id_continuous[0]])
+    df_out["__zi__"] = range(len(df_out))
+    c_zone = (df_out["__zf__"] - df_out["__zi__"]) == 0
 
-    # Create empty regular segment table and we fill it with regular segment
-    df_new = pd.DataFrame(index=range(df_disc["nb_coupon"].sum()),
-                          columns=[*id_discrete, *id_continuous])
-    for ix in df_disc.index:
-        nb_cs = df_disc.loc[ix]
-        value_temp = np.linspace(
-            nb_cs[id_continuous[0]],
-            nb_cs[id_continuous[1]],
-            num=nb_cs['nb_coupon'] + 1,
-            dtype=int)
-        df_temp = pd.DataFrame(columns=[*id_discrete, *id_continuous])
-        df_temp[id_continuous[0]] = value_temp[:-1]
-        df_temp[id_continuous[1]] = value_temp[1:]
-        df_temp[id_discrete] = nb_cs[id_discrete].values
-        df_new.iloc[nb_cs["nb_coupon_cumsum0"]:nb_cs["nb_coupon_cumsum"]] = df_temp
+    df_out["__id2_prev__"] = df[id_continuous[1]]
+    df_out.loc[df_out.index[1:], "__id2_prev__"] = df_out.loc[df_out.index[:-1], id_continuous[1]].values
+    c_inner = df_out[id_continuous[0]] >= df_out["__id2_prev__"]
 
-    df_new["__id__"] = range(len(df_new))
+    c_disc = np.array(df_out[id_discrete].iloc[1:].values == df_out[id_discrete].iloc[:-1].values)
+    c_disc = c_disc.mean(axis=1) == 1
+    c_disc = ~ np.concatenate(([True], c_disc))
 
-    df_keep = merge(df_new, data,
-                    id_continuous=id_continuous,
-                    id_discrete=id_discrete,
-                    how="left")
+    df_out["__zone__"] = (c_zone & c_inner) | c_disc
+    df_out["__zone__"] = df_out["__zone__"].cumsum()
 
-    df_new = df_new[df_new["__id__"].isin(df_keep["__id__"])]
-    return df_new[[*id_discrete, *id_continuous]]
+    return df_out.loc[df.index, [*df.columns.to_list(), "__zone__"]]
 
 
-def __merge(df_left: pd.DataFrame, df_right: pd.DataFrame,
-            id_discrete: iter,
-            id_continuous,
-            names=("left", "right")):
-    index = [*id_discrete, *id_continuous]
-
-    df_id1, df_id2, index_left, index_right = __refactor_data(
-        df_left,
-        df_right, id_continuous, id_discrete,
-        names=names)
-    df_id1_stretched = tools.create_continuity(
-        df_id1, id_discrete=id_discrete,
-        id_continuous=id_continuous)
-    df_id2_stretched = tools.create_continuity(
-        df_id2, id_discrete=id_discrete,
-        id_continuous=id_continuous)
-
-    df_id1_stretched.loc[df_id1_stretched[index_left].isna(), index_left] = -1
-    df_id2_stretched.loc[df_id2_stretched[index_right].isna(), index_right] = -1
-
-    df = pd.concat((df_id1_stretched, df_id2_stretched), sort=False)
-    df = df.sort_values(by=index)
-
-    id1, id2 = id_continuous
-    df_merge = __table_jumps(df, *id_continuous, id_discrete)
-
-    df_merge = df_merge.dropna()
-
-    df_merge = pd.merge(
-        df_merge,
-        df_id1_stretched[[index_left, id1, *id_discrete]],
-        on=[id1, *id_discrete], how="left")
-
-    df_merge = pd.merge(
-        df_merge,
-        df_id2_stretched[[index_right, id1, *id_discrete]],
-        on=[id1, *id_discrete], how="left")
-
-    df_end1 = df_id1_stretched[[index_left, id2, *id_discrete]].rename(
-        {index_left: index_left + "_end"}, axis=1)
-    df_end2 = df_id2_stretched[[index_right, id2, *id_discrete]].rename(
-        {index_right: index_right + "_end"}, axis=1)
-
-    df_merge = pd.merge(
-        df_merge,
-        df_end1,
-        left_on=[id1, *id_discrete],
-        right_on=[id2, *id_discrete], how="left", suffixes=("", "_1"))
-    df_merge = pd.merge(
-        df_merge,
-        df_end2,
-        left_on=[id1, *id_discrete],
-        right_on=[id2, *id_discrete], how="left", suffixes=("", "_2"))
-    df_merge = df_merge.drop([f"{id2}_1", f"{id2}_2"], axis=1)
-
-    # Tackle the problem of ending pad when there is discontinuity
-    idx1 = (df_merge[index_left + "_end"].infer_objects(copy=False).fillna(-1) >= 0).values
-    is_na_condition = df_merge.loc[:, index_left].isna()
-    df_merge.loc[idx1 & is_na_condition, index_left] = -1
-
-    idx2 = (df_merge[index_right + "_end"].infer_objects(copy=False).fillna(-1) >= 0).values
-    is_na_condition_2 = df_merge.loc[:, index_right].isna()
-    df_merge.loc[idx2 & is_na_condition_2, index_right] = -1
-    df_merge = df_merge.drop([index_right + "_end", index_left + "_end"],
-                             axis=1)
-
-    discontinuity = tools.compute_discontinuity(df_merge, id_discrete, id_continuous)
-    df_merge.loc[discontinuity & df_merge[
-        index_left].isna(), index_left] = -1
-    df_merge.loc[discontinuity & df_merge[
-        index_right].isna(), index_right] = -1
-
-    df_merge = df_merge.infer_objects(copy=False).ffill().drop("___t", axis=1)
-
-    df_merge[[index_right, index_left, id1, id2]] = df_merge[
-        [index_right, index_left, id1, id2]].astype(float).fillna(
-        -1).astype(int)
-
-    df_merge = df_merge.loc[
-        ~(df_merge[index_left] + df_merge[index_right] == -2)]
-    return df_merge
+def get_overlapping(df: pd.DataFrame,
+                    id_discrete: Iterable[Any],
+                    id_continuous: [Any, Any]
+                    ) -> pd.Series:
+    df = create_zones(df, id_discrete, id_continuous)
+    overlap = df["__zone__"].duplicated(keep=False)
+    return overlap
 
 
-def __fix_discrete_index(
-        data_left: pd.DataFrame,
-        data_right: pd.DataFrame,
-        id_discrete_left: iter,
-        id_discrete_right: iter):
-    if len(id_discrete_left) < len(id_discrete_right):
-        data_right, data_left = __fix_discrete_index(
-            data_right, data_left,
-            id_discrete_right, id_discrete_left, )
-        return data_left, data_right
-
-    df_id_left = data_left.loc[:, id_discrete_left].drop_duplicates()
-    df_id_right = data_right.loc[:, id_discrete_right].drop_duplicates()
-
-    id_inter = [id_ for id_ in id_discrete_right if id_ in id_discrete_left]
-    id_inter = list(id_inter)
-    if len(id_inter) > 0:
-        df_id_right = pd.merge(df_id_left, df_id_right, on=id_inter)
-        data_right = pd.merge(df_id_right, data_right, on=id_discrete_right, how="left")
-    return data_left, data_right
+def admissible_dataframe(data: pd.DataFrame,
+                         id_discrete: Iterable[Any],
+                         id_continuous: [Any, Any]
+                         ):
+    return sum(get_overlapping(data, id_discrete,
+                               id_continuous)) == 0
 
 
-def suppress_duplicates(df, id_discrete, id_continuous):
-    df = df.sort_values([*id_discrete, *id_continuous])
-    df_duplicated = df.drop([*id_discrete, *id_continuous], axis=1)
-    mat_duplicated = pd.DataFrame(
-        df_duplicated.iloc[1:].values == df_duplicated.iloc[
-                                         :-1].values)
-    id1 = id_continuous[0]
-    id2 = id_continuous[1]
-    index = mat_duplicated.sum(axis=1) == df_duplicated.shape[1]
-    index = np.where(index)[0]
-    df1 = df.iloc[index]
-    df2 = df.iloc[index + 1]
-    idx_replace = df1[id2].values == df2[id1].values
-    idx_to_agg = index[idx_replace]
-    i_loc = df1.columns.get_loc(id2)
-    df.iloc[idx_to_agg, i_loc] = df.iloc[idx_to_agg + 1, i_loc].values
-    df = df.drop(df.index[idx_to_agg + 1])
-    return df
+def sample_non_admissible_data(data: pd.DataFrame,
+                               id_discrete: Iterable[Any],
+                               id_continuous: [Any, Any]
+                               ) -> pd.DataFrame:
+    return data[get_overlapping(data, id_discrete,
+                                id_continuous)]
 
 
-def _increasing_continuous_index(df: pd.DataFrame, id_continuous: [Any, Any]):
-    id1 = id_continuous[0]
-    id2 = id_continuous[1]
-    df[f"{id1}_new"] = df.loc[:, [id1, id2]].min(axis=1)
-    df[f"{id2}_new"] = df.loc[:, [id1, id2]].max(axis=1)
-
-    df = df.drop([id1, id2], axis=1)
-    df = df.rename({f"{id1}_new": id1, f"{id2}_new": id2}, axis=1)
-    return df
-
-
-def __refactor_data(data_left, data_right, id_continuous, id_discrete,
-                    names=("left", "right")):
-    index = [*id_discrete, *id_continuous]
-    data_left = _increasing_continuous_index(data_left, id_continuous)
-    data_right = _increasing_continuous_index(data_right, id_continuous)
-    index_right = names[1] + "_idx"
-    index_left = names[0] + "_idx"
-    df_id1 = data_left[index].drop_duplicates()
-    df_id2 = data_right[index].drop_duplicates()
-    df_id1.index.name = index_left
-    df_id2.index.name = index_right
-    df_id1 = df_id1.reset_index()
-    df_id2 = df_id2.reset_index()
-
-    df_id1[index_right] = np.nan
-    df_id2[index_left] = np.nan
-
-    df_id1 = df_id1.sort_values(by=index)
-    df_id2 = df_id2.sort_values(by=index)
-    return df_id1, df_id2, index_left, index_right
-
-
-def __check_args_merge(data_left, data_right,
-                       id_continuous,
-                       id_discrete,
-                       how):
-    for c in [*id_continuous, *id_discrete]:
-        if not (c in data_left.columns or c in data_right.columns):
-            raise ValueError(f"{c} is not in columns")
-    if not len(id_continuous) == 2:
-        raise ValueError("Only two continuous index is possible")
-    if how not in ["left", "right", "inner", "outer"]:
-        raise ValueError('How must be in "left", "right", "inner", "outer"')
-
-
-def __table_jumps(data, id1, id2, id_discrete):
-    df_unique_start = data[[id1, *id_discrete]].rename(
-        {id1: "___t"}, axis=1).drop_duplicates()
-
-    df_unique_end = data[[id2, *id_discrete]].rename(
-        {id2: "___t"}, axis=1).drop_duplicates()
-
-    ret = pd.concat((df_unique_end, df_unique_start),
-                    sort=False).sort_values(
-        by=[*id_discrete, "___t"]).drop_duplicates()
-    if len(ret) == 0:
-        return ret
-    ret.index = range(ret.shape[0])
-    ret[id1] = -1
-    ret.iloc[:-1, -1] = ret["___t"].iloc[:-1].values
-    ret[id2] = -1
-    ret.iloc[:-1, -1] = ret["___t"].iloc[1:].values
-    return ret
-
-
-def aggregate_duplicates(
-        df: pd.DataFrame,
-        id_discrete: list[Any],
-        id_continuous: [Any, Any],
-        dict_agg: dict[str, list[Any]] | None = None,
-        verbose: bool = False
+def compute_discontinuity(
+        df,
+        id_discrete: Iterable[Any],
+        id_continuous: [Any, Any]
 ):
     """
-    Removes duplicated rows by aggregating them.
+    Compute discontinuity in rail segment. The i-th element in return
+    will be True if i-1 and i are discontinuous
+
+    """
+    discontinuity = np.zeros(len(df)).astype(bool)
+    for col in id_discrete:
+        if col in df.columns:
+            discontinuity_temp = np.concatenate(
+                ([False], df[col].values[1:] != df[col].values[:-1]))
+            discontinuity |= discontinuity_temp
+
+    if id_continuous[0] in df.columns and id_continuous[1] in df.columns:
+        discontinuity_temp = np.concatenate(
+            ([False], df[id_continuous[0]].values[1:] != df[id_continuous[
+                1]].values[:-1]))
+        discontinuity |= discontinuity_temp
+    return discontinuity
+
+
+def create_continuity(
+        df: pd.DataFrame,
+        id_discrete: Iterable[Any],
+        id_continuous: [Any, Any],
+        limit=None,
+        sort=False
+) -> pd.DataFrame:
+    df_in = df.__deepcopy__()
+    col_save = np.array(df_in.columns)
+    index = [*id_discrete, *id_continuous]
+    df_in["discontinuity"] = compute_discontinuity(df_in, id_discrete, id_continuous)
+    if df_in["discontinuity"].sum() == 0:
+        return df
+    else:
+        mask = (df[id_discrete].eq(df[id_discrete].shift())).sum(axis=1) < len(list(id_discrete))
+        ix__ = np.where(df_in["discontinuity"].values & ~mask)[0]
+        df_add = pd.DataFrame(columns=df_in.columns, index=range(len(ix__)))
+        df_add[index] = df_in.iloc[ix__][index].values
+        df_add[id_continuous[0]] = df_in.iloc[ix__ - 1].loc[:, id_continuous[1]].values
+        df_add[id_continuous[1]] = df_in.iloc[ix__].loc[:, id_continuous[0]].values
+        if limit is not None:
+            df_add = df_add[(df_add[id_continuous[1]] - df_add[id_continuous[0]]) < limit]
+        df_in = pd.concat((df_in, df_add.dropna(axis=1, how='all')), axis=0)
+        df_in = df_in[df_in[id_continuous[0]] < df_in[id_continuous[1]]]
+    if sort:
+        df_in = df_in.sort_values([*id_discrete, *id_continuous])
+    return df_in.loc[:, col_save].reset_index(drop=True)
+
+
+def cumul_length(df: pd.DataFrame, id_continuous: [Any, Any]) -> int:
+    """ Returns the sum of all segments sizes in the dataframe. """
+    diff = df[id_continuous[1]] - df[id_continuous[0]]
+    return diff.sum()
+
+
+def reorder_columns(df: pd.DataFrame, id_discrete: list[Any], id_continuous: [Any, Any]):
+    other = [col for col in df.columns if col not in [*id_discrete, *id_continuous]]
+    return df[[*id_discrete, *id_continuous, *other]]
+
+
+def name_simplifier(names: list[str]):
+    list_agg_op = ["mean", "max", "min", "sum", "mode"]
+    new_names = []
+    for n in names:
+        n = n.split("_")
+        if n[0] in list_agg_op and n[1] in list_agg_op:
+            del n[1]
+            n = "_".join(n)
+        else:
+            n = "_".join(n)
+        new_names.append(n)
+    return new_names
+
+
+def mark_new_segment(df: pd.DataFrame, id_discrete: list[Any], id_continuous: [Any, Any]) -> pd.Series:
+    """
+    Creates a boolean pd.Series aligning with df indices. True: there is a change in any of the id_discrete
+    value between row n and row n-1 or there is a discontinuity (shown by id_continuous) between row n and row n-1
+    Seems to be equivalent to crep.tools.compute_discontinuity
 
     Parameters
     ----------
@@ -842,48 +245,109 @@ def aggregate_duplicates(
         discrete columns (object or categorical)
     id_continuous : list of 2 column names
         continuous columns that delimit the segments' start and end
-    dict_agg: dict, keys: agg operator, values: list of columns or None
+
+    Returns
+    -------
+    df: boolean pandas series
+    """
+    mask = df[id_discrete].eq(df[id_discrete].shift())
+    new_segm = mask.sum(axis=1) < len(id_discrete)
+    new_segm = new_segm | (~df[id_continuous[0]].eq(df[id_continuous[1]].shift()))
+    return new_segm
+
+
+def compute_cumulated_length(
+        df: pd.DataFrame,
+        id_discrete: list[Any],
+        id_continuous: [Any, Any]
+) -> pd.Series:
+    """
+    TODO : compute_cumulated_length.
+    Computes cumulative sum of segment length for each unique combination of id_discrete.
+
+    Parameters
+    ----------
+    df : pandas dataframe
+        without duplicated rows or overlapping rows
+    id_discrete : list
+        discrete columns (object or categorical)
+    id_continuous : list of 2 column names
+        continuous columns that delimit the segments' start and end
+
+    Returns
+    -------
+    df: pandas series with integers
+    """
+    if not admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous):
+        raise Exception("The dataframe is not admissible. Consider using aggregate_duplicates() and "
+                        "crep.tools.build_admissible_data() if you want to make the dataframe admissible.")
+    df = df.copy()
+    df["__new_seg__"] = mark_new_segment(df, id_discrete, id_continuous)
+    df["__diff__"] = (df[id_continuous[1]] - df[id_continuous[0]])
+    cumul = df["__diff__"].cumsum()
+    df.loc[df["__new_seg__"], "__reset_cumul__"] = cumul.shift().loc[df["__new_seg__"]].fillna(0)
+    cumul = cumul - df["__reset_cumul__"].ffill()
+    # Correction for the fact that for the last row of each segment, __cumul__ == 0
+    cumul.loc[cumul == 0] = cumul.shift() + df["__diff__"]
+    return cumul
+
+
+def concretize_aggregation(
+        df: pd.DataFrame,
+        id_discrete: list[Any],
+        id_continuous: [Any, Any],
+        dict_agg: dict[str, list[Any]] | None,
+        add_group_by: Any | list[Any] = None,
+        verbose: bool = False
+) -> pd.DataFrame:
+    """
+    Groupby + aggregation operations
+
+    Parameters
+    ----------
+    df : pandas dataframe
+        without duplicated rows or overlapping rows
+    id_discrete : list
+        discrete columns (object or categorical)
+    id_continuous : list of 2 column names
+        continuous columns that delimit the segments' start and end
+    dict_agg: dict, keys: agg operator, values: list of columns or None,
         specify which aggregation operator to apply for which column. If None, default is mean for all columns.
-        id_continuous and id_discrete columns don't need to be specified in the dictionary
+        id_continuous, id_discrete and add_group_by columns don't need to be specified in the dictionary
+    add_group_by : optional. column name or list of column names
+        Additional columns to consider when grouping by
     verbose: boolean
         whether to print shape of df and if df is admissible at the end of the function.
 
     Returns
     -------
-    df: pandas dataframe
-        without duplicated rows
+    df : pandas series with integers
 
     Raises
     ------
     Exception
-        When the dataframe df passed in argument does not contain any duplicated row
+        When the dataframe df passed in argument is not admissible i.e. it contains overlapping rows and or duplicates
     """
-    df = df.copy()
-    cumul_ = tools.cumul_length(df, id_continuous=id_continuous)
+    if not admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous):
+        raise Exception("The dataframe is not admissible. Consider using aggregate_duplicates() and "
+                        "crep.tools.build_admissible_data() if you want to make the dataframe admissible.")
 
-    # split duplicates and non-duplicates
-    mask = df.duplicated(subset=[*id_discrete, *id_continuous], keep=False)
-    df_dupl = df.loc[mask, :].sort_values(by=[*id_discrete, id_continuous[1]]).reset_index(drop=True)
-    if df_dupl.shape[0] == 0:
-        raise Exception("The dataframe does not contain duplicated rows.")
-    df_no_dupl = df.loc[~mask, :].sort_values(by=[*id_discrete, id_continuous[1]]).reset_index(drop=True)
+    cumul_ = cumul_length(df, id_continuous=id_continuous)
 
-    # preparation for groupby & agg
-    same_than_above = df_dupl[[*id_discrete, *id_continuous]].eq(df_dupl[[*id_discrete, *id_continuous]].shift())
-    same_than_above = (~same_than_above).sum(axis=1) == 0
-    df_dupl["__lim__"] = 1
-    df_dupl.loc[same_than_above, "__lim__"] = 0
-    df_dupl["__lim__"] = df_dupl["__lim__"].cumsum()
-
-    # =============== groupby & agg of df_dupl ==================
     drop_cols = set()  # columns that should be removed at the end ot the process
-    df_mean = None
+    df_mean = None  # list of dataframes that will further be concatenated
     df_other = None
-    colnames = []  # names of new columns
+
+    group_by = id_discrete
+    if type(add_group_by) is str:
+        group_by = group_by + [add_group_by]
+    elif type(add_group_by) is list:
+        group_by = group_by + add_group_by
 
     if dict_agg is None:
-        warnings.warn("dict_agg not specified. Default aggregation operator set to 'mean' for all features.")
-        columns = [col for col in df.columns if col not in ["__lim__", *id_discrete, *id_continuous]]
+        warnings.warn("dict_agg not specified. Default aggregation operator set to 'mean' for all numerical features"
+                      " and to 'mode' for categorical features.")
+        columns = [col for col in df.columns if col not in [*group_by, *id_discrete, *id_continuous]]
         numerical_columns = list(df[columns].select_dtypes("number").columns)
         categorical_columns = list(df[columns].select_dtypes("object").columns)
         dict_agg = {}
@@ -894,11 +358,13 @@ def aggregate_duplicates(
 
     # define id_continuous agg operators
     if "min" in dict_agg.keys():
-        dict_agg["min"].append(id_continuous[0])
+        if id_continuous[0] not in dict_agg["min"]:
+            dict_agg["min"].append(id_continuous[0])
     else:
         dict_agg["min"] = [id_continuous[0]]
     if "max" in dict_agg.keys():
-        dict_agg["max"].append(id_continuous[1])
+        if id_continuous[1] not in dict_agg["max"]:
+            dict_agg["max"].append(id_continuous[1])
     else:
         dict_agg["max"] = [id_continuous[1]]
 
@@ -907,28 +373,24 @@ def aggregate_duplicates(
         if agg_type not in dict_agg:
             dict_agg[agg_type] = []
 
-    group_by = [*id_discrete, "__lim__"]
-    dict_renaming = {}
-
-    df_pl = pl.DataFrame(df_dupl)
+    df_pl = pl.DataFrame(df)
     if len(dict_agg["mean"]) > 0:
         v = dict_agg["mean"]
-        df_dupl["__diff__"] = df_dupl[id_continuous[1]] - df_dupl[id_continuous[0]]
-        divider = pd.concat([df_dupl["__diff__"]] * len(v), axis=1)
+        df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
+        divider = pd.concat([df["__diff__"]] * len(v), axis=1)
         divider.columns = v
-        divider = pd.concat([df_dupl[group_by], divider], axis=1)
+        divider = pd.concat([df[group_by], divider], axis=1)
         divider = divider.groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1)
         # mean calculation
-        df_dupl[v] = df_dupl[v].mul(df_dupl["__diff__"], axis=0)
-        data = df_dupl[group_by + v].groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1) / divider
+        df[v] = df[v].mul(df["__diff__"], axis=0)
+        data = df[group_by + v].groupby(by=group_by).agg("sum").reset_index().drop(group_by, axis=1) / divider
         data.columns = "mean_" + pd.Series(data.columns)
-        df_core = df_dupl[group_by].drop_duplicates().reset_index(drop=True)
+        df_core = df[group_by].drop_duplicates().reset_index(drop=True)
         data = pd.concat([df_core, data], axis=1)
         df_mean = data
         drop_cols.add("__diff__")
         for col in v:
             drop_cols.add(col)
-            dict_renaming[col] = tools.name_simplifier(["mean_" + col])[0]
 
     # other than means
     columns = list(set(group_by + dict_agg["max"] + dict_agg["min"] + dict_agg["sum"] + dict_agg["mode"]))
@@ -943,8 +405,8 @@ def aggregate_duplicates(
     if len(mode_columns) > 0:
         data = data.with_columns(
             pl.col(col_).map_elements(
-                lambda x: x[0] if len(x) > 0 else None, return_dtype=schema[col_.replace("mode_", "", 1)])
-            .alias(col_)
+                lambda x: x[0] if len(x) > 0 else None, return_dtype=schema[col_.replace("mode_", "", 1)]
+            ).alias(col_)
             for col_ in mode_columns
         )
     data = pd.DataFrame(data, columns=data.columns)
@@ -953,64 +415,46 @@ def aggregate_duplicates(
     for col in columns:
         if col not in group_by:
             drop_cols.add(col)
-            for agg_type in ["max", "min", "sum", "mode"]:
-                if col in dict_agg[agg_type]:
-                    # renaming columns in df_no_dupl
-                    rk = list(dict_renaming.keys())
-                    if col in rk:
-                        df_no_dupl[col + f"_{len(rk)}"] = df_no_dupl[col]
-                        dict_renaming[col + f"_{len(rk)}"] = tools.name_simplifier([f"{agg_type}_" + col])[0]
-                    else:
-                        dict_renaming[col] = tools.name_simplifier([f"{agg_type}_" + col])[0]
 
     # concatenation of all groupby dataframes
-    df_dupl = df_dupl.drop(list(drop_cols), axis=1)
-    df_dupl = df_dupl.drop_duplicates(group_by).reset_index(drop=True)
+    df = df.drop(list(drop_cols), axis=1)
+    df = df.drop_duplicates(group_by).reset_index(drop=True)
 
     if df_mean is not None:
-        df_mean.columns = tools.name_simplifier(list(df_mean.columns))
-        df_dupl = df_dupl.merge(right=df_mean, how="left", on=group_by)
+        df_mean.columns = name_simplifier(list(df_mean.columns))
+        df = df.merge(right=df_mean, how="left", on=group_by)
     if df_other is not None:
-        df_other.columns = tools.name_simplifier(list(df_other.columns))
-        df_dupl = df_dupl.merge(right=df_other, how="left", on=group_by)
+        df_other.columns = name_simplifier(list(df_other.columns))
+        df = df.merge(right=df_other, how="left", on=group_by)
 
-    df_dupl = df_dupl.drop(
-        columns=["__lim__"],
-    ).sort_values(
-        by=[*id_discrete, f"max_{id_continuous[1]}"]
-    ).reset_index(drop=True)
-
-    # =============== recombining df_dupl & df_no_dupl ==================
-    df_no_dupl = df_no_dupl.rename(columns=dict_renaming).reset_index(drop=True)
-    df_dupl = df_dupl.reset_index(drop=True)
-
-    df = pd.concat([df_dupl, df_no_dupl], axis=0)
-    df = df.rename(
-        columns={f"min_{id_continuous[0]}": id_continuous[0], f"max_{id_continuous[1]}": id_continuous[1]}
-    )
-    df = df.sort_values(by=[*id_discrete, id_continuous[1]]).reset_index(drop=True)
-    df = tools.reorder_columns(df=df, id_discrete=id_discrete, id_continuous=id_continuous)
+    df = df.rename(columns={f"min_{id_continuous[0]}": id_continuous[0], f"max_{id_continuous[1]}": id_continuous[1]})
 
     if verbose:
-        print("post aggregate_duplicates. Admissible:",
-              tools.admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous))
+        print("post concretize_agg. Admissible:",
+              admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous))
         print(df.shape)
-        c = tools.cumul_length(df, id_continuous=id_continuous)
+        c = cumul_length(df, id_continuous=id_continuous)
         print("cumulative length post:", c, "diff pre-post:", cumul_ - c)
 
     return df
 
 
-def aggregate_continuous_data(
+
+def n_cut_finder(
         df: pd.DataFrame,
         id_discrete: list[Any],
         id_continuous: [Any, Any],
         target_size: int,
-        dict_agg: None | dict[str, list[Any]] = None,
-        verbose: bool = False
-) -> pd.DataFrame:
+        method: Literal["agg", "split"]
+) -> pd.Series:
     """
-    Aggregate segments to uniformize the size of smaller segments.
+    Finds in how many sub-segments the segment should be cut (method = "split") or find where to stop the aggregation of
+    segments into a super segment (method = "agg"). The returned value of the function is the pd.Series of the column
+     __n_cut__
+
+    If method is "agg", the __n_cut__ contains non-NaN value everywhere but in the last row before a change of
+    id_discrete value. The non-NaN values represent how many super-segments should result from the aggregation of the
+    previous rows with NaN values.
 
     Parameters
     ----------
@@ -1022,520 +466,140 @@ def aggregate_continuous_data(
         continuous columns that delimit the segments' start and end
     target_size: integer > 0
         targeted segment size
-    dict_agg: optional. dict, keys: agg operator, values: list of columns or None,
-        specify which aggregation operator to apply for which column. If None, default is mean for all columns.
-        id_continuous, id_discrete and add_group_by columns don't need to be specified in the dictionary
-    verbose: optional. boolean
-        whether to print shape of df and if df is admissible at the end of the function.
-
+    method : str, either "agg" or "split"
+        Whether to find n_cut for aggregating (agg) or for splitting (split)
 
     Returns
     -------
-    df: pandas dataframe
+    df: pandas series
+        agg: series with floats and NaN. Floats are displayed in the rows that mark new segments.
+        The remaining rows contain NaN. The float values indicates the number of possible target_sizes divisions in the
+        segment (the sum of the previous NaN rows)
+        split: series with integers >= 1. They indicate in how many segments the current row should be divided.
 
     Raises
     ------
     Exception
         When the dataframe df passed in argument is not admissible i.e. it contains overlapping rows and or duplicates
     """
-    if not tools.admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous):
-        raise Exception("The dataframe is not admissible. Consider using aggregate_duplicates() and "
-                        "crep.tools.build_admissible_data() if you want to make the dataframe admissible.")
+    created_columns = []
     df = df.copy()
-    cumul_ = tools.cumul_length(df, id_continuous=id_continuous)
-
-    df["__lim__"] = tools.clusterize(
-        df=df,
-        id_discrete=id_discrete,
-        id_continuous=id_continuous,
-        target_size=target_size,
-    )
-    df = tools.concretize_aggregation(
-        df=df,
-        id_discrete=id_discrete,
-        id_continuous=id_continuous,
-        dict_agg=dict_agg,
-        add_group_by="__lim__"
-    )
-    df = df.drop("__lim__", axis=1)
-
-    if verbose:
-        print("post aggregate_continuous_data. Admissible:",
-              tools.admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous))
-        print(df.shape)
-        c = tools.cumul_length(df, id_continuous=id_continuous)
-        print("cumulative length post:", c, "diff pre-post:", cumul_ - c)
-
-    return df
+    if method == "agg":
+        if not admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous):
+            raise Exception("The dataframe is not admissible. Consider using aggregate_duplicates() and "
+                            "crep.tools.build_admissible_data() if you want to make the dataframe admissible.")
+        if "__new_seg__" not in df.columns:
+            df["__new_seg__"] = mark_new_segment(df, id_discrete, id_continuous)
+        if "__cumul__" not in df.columns:
+            df["__cumul__"] = compute_cumulated_length(df, id_discrete, id_continuous).values
+        df["__n_cut__"] = np.nan
+        mask = df["__new_seg__"].shift(-1).fillna(True)
+        df.loc[mask, "__n_cut__"] = (
+            ((df["__cumul__"] + (target_size // 1.5)) / target_size)
+            .loc[mask]
+            .replace(0, 1)
+        )
+    else:
+        df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
+        created_columns.append("__diff__")
+        df["__n_cut__"] = abs(df["__diff__"] - target_size // 2) // target_size + 1
+    return df["__n_cut__"]
 
 
-def split_segment(
+def clusterize(
         df: pd.DataFrame,
         id_discrete: list[Any],
         id_continuous: [Any, Any],
         target_size: int,
-        columns_sum_aggregation: list[str] = None,
-        verbose: bool = False
-) -> pd.DataFrame:
+) -> pd.Series:
     """
-    Uniformizes segment size by splitting them into shorter segments close to target size.
+    TODO: create_cluster_by_size
+    Defines where to limit segment aggregation when uniformizing segment size to target size.
 
     Parameters
     ----------
-    df : pandas dataframe
-        without duplicated rows or overlapping rows
+    df : pandas dataframe.
+        The dataframe should be not have duplicated or overlapping rows.
     id_discrete : list
         discrete columns (object or categorical)
     id_continuous : list of 2 column names
         continuous columns that delimit the segments' start and end
     target_size: integer > 0
         targeted segment size
-    columns_sum_aggregation: list[str], optional
-        Default to empty list. Some columns may have to be summed over several segments when creating super segments.
-        If so, splitting a row and assigning to each new row the same value as in the original non-split row may
-        result in inflated sums later on. To counter that, the columns that should later be summed are specified in
-        this list. The values are transformed into ratios relative to the segment size, then the row is split, and
-        then an inverse transformation is done to reassign a non-ratio value.
-    verbose: optional. boolean
-        whether to print shape of df and if df is admissible at the end of the function.
 
     Returns
     -------
-    df: pandas dataframe
-    """
-    df = df.copy()
-    if columns_sum_aggregation is None:
-        columns_sum_aggregation = []
-
-    df["__n_cut__"] = tools.n_cut_finder(
-        df=df,
-        id_discrete=id_discrete,
-        id_continuous=id_continuous,
-        target_size=target_size,
-        method="split"
-    )
-    df["__n_cut_dyn__"] = df["__n_cut__"]
-
-    if "__diff__" not in df.columns:
-        df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
-
-    for col in columns_sum_aggregation:
-        df[col] = df[col] / df["__diff__"]
-
-    new_rows = []
-    while df["__n_cut_dyn__"].max() > 0:
-        df_temp = df.loc[df["__n_cut_dyn__"] >= 1, :].copy()
-        df_temp[id_continuous[1]] = (
-                df_temp[id_continuous[0]]
-                + df_temp["__diff__"] * ((df_temp["__n_cut_dyn__"]) / df_temp["__n_cut__"])
-        ).astype("float").round().astype("int")
-        df_temp[id_continuous[0]] = (
-                df_temp[id_continuous[0]]
-                + df_temp["__diff__"] * ((df_temp["__n_cut_dyn__"] - 1) / df_temp["__n_cut__"])
-        ).astype("float").round().astype("int")
-        new_rows.append(df_temp)
-        df["__n_cut_dyn__"] -= 1
-    df = pd.concat(new_rows, axis=0).sort_values(by=[*id_discrete, id_continuous[1]]).reset_index(drop=True)
-
-    df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
-    for col in columns_sum_aggregation:
-        df[col] = df[col] * df["__diff__"]
-
-    df = df.drop(["__diff__", "__n_cut__", "__n_cut_dyn__"], axis=1)
-
-    if verbose:
-        print("post split_segment. Admissible:",
-              tools.admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous))
-        print(df.shape)
-
-    return df
-
-
-def homogenize_within(
-        df: pd.DataFrame,
-        id_discrete: list[Any],
-        id_continuous: [Any, Any],
-        target_size: float | int | None = None,
-        method: Literal["agg", "split"] | list[Literal["agg", "split"]] | set[Literal["agg", "split"]] | None = None,
-        dict_agg: dict[str, list[Any]] | None = None,
-        strict_size: bool = False,
-        verbose: bool = False
-) -> pd.DataFrame:
-    """
-    Uniformizes segment size by splitting them into shorter segments close to target size. The uniformization aims
-    to get a close a possible to target_size with +- 1.33 * target_size as maximum error margin.
-
-    Parameters
-    ----------
-    df : pandas dataframe
-        without duplicated rows or overlapping rows
-    id_discrete : list
-        discrete columns (object or categorical)
-    id_continuous : list of 2 column names
-        continuous columns that delimit the segments' start and end
-    target_size: optional, integer > 0 or None
-        targeted segment size. If None, the median is selected.
-    method : optional str, either "agg" or "split"
-        Whether to homogenize segment length by splitting long segments ("split") or by aggregating short segments ("agg") or both.
-        Default to None lets the function define the method.
-    strict_size: whether to strictly respect target_size specified in argument, if any specified.
-        The function can change the target size if the value is not congruent with the method
-    dict_agg: optional. dict, keys: agg operator, values: list of columns or None,
-        specify which aggregation operator to apply for which column. If None, default is mean for all columns.
-        id_continuous, id_discrete and add_group_by columns don't need to be specified in the dictionary
-    verbose: optional. boolean
-        whether to print shape of df and if df is admissible at the end of the function.
+    df : pandas series
+        with common identifiers (integers) for the segments that should be grouped together.
 
     Raises
     ------
-    Exception:
-        If method is not defined and if the function failed to select automatically a method.
-
-    Returns
-    -------
-    df: pandas dataframe
+    Exception
+        When the dataframe df passed in argument is not admissible i.e. it contains overlapping rows and or duplicates
     """
-    # ==================
-    # verify is method is applicable, and sets methods and target_size
+    if not admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous):
+        raise Exception("The dataframe is not admissible. Consider using aggregate_duplicates() and "
+                        "crep.tools.build_admissible_data() if you want to make the dataframe admissible.")
     df = df.copy()
-
-    if method is None:
-        method = set()
+    df["__diff__"] = df[id_continuous[1]] - df[id_continuous[0]]
+    if target_size < 2 * df["__diff__"].max():
+        raise ValueError("target_size should at least be 2 times larger than the maximum segment length.")
     else:
-        if type(method) is str:
-            method = {method}
-        else:
-            method = set(method)
-    df["__diff__"] = (df[id_continuous[1]] - df[id_continuous[0]])
-    min_thresh = int(df["__diff__"].min() * 1.33)
-    # method "agg" is not applicable if some rows are duplicated or if dict_agg is missing
-    agg_applicable = (
-            tools.admissible_dataframe(data=df, id_discrete=id_discrete, id_continuous=id_continuous)
-            & ((dict_agg is not None) | ("agg" in method))
-    )
-    if not agg_applicable:
-        warnings.warn("Method 'agg' is not applicable. The dataframe might either be non-admissible, or dict_agg is "
-                      "not specified and 'agg' method was not specified either.")
+        df["__new_seg__"] = mark_new_segment(df, id_discrete, id_continuous)
+        df["__cumul__"] = compute_cumulated_length(df, id_discrete, id_continuous).values
+        df = df.sort_values([*id_discrete, id_continuous[1]]).reset_index(drop=True)
 
-    if len(method) == 0:
-        if df["__diff__"].min() < target_size / 1.5 and agg_applicable:
-            method.add("agg")
-        elif df["__diff__"].max() > target_size * 1.33:
-            method.add("split")
-        else:
-            warnings.warn("No method selected. Please, check whether the dataframe is admissible and "
-                          "whether the target size is coherent given the size of the segments in the dataframe.")
-
-    if target_size is None:
-        target_size = int(df["__diff__"].median())
-        warnings.warn(f"Unspecified target size set at median: {target_size}")
-
-    if "agg" not in method and target_size > min_thresh and not strict_size:
-        initial_ts = f"{target_size}"
-        target_size = max(int(df["__diff__"].min() * 1.33), 20)
-        warnings.warn(f"Specified target_size for method {method} was not congruent with segment sizes in the"
-                      " dataframe. target_size has been modified from " + initial_ts + f" to {target_size}.")
-
-    if "__diff__" in df.columns:
-        df = df.drop("__diff__", axis=1)
-
-    # ==================
-    # apply method(s)
-    col_sum_agg = []
-    if dict_agg is not None:
-        if "sum" in dict_agg.keys():
-            col_sum_agg = dict_agg["sum"]
-
-    if "split" in method or ("agg" in method and target_size < min_thresh):
-        df = split_segment(
-            df=df,
-            id_discrete=id_discrete,
-            id_continuous=id_continuous,
-            target_size=target_size // 3 if "agg" in method else target_size,
-            columns_sum_aggregation=col_sum_agg,
-            verbose=verbose
-        )
-
-    if "agg" in method:
-        df = aggregate_continuous_data(
+        # how many cuts should be done based on __cumul__ (created by cumul_segment_length())
+        df["__n_cut__"] = n_cut_finder(
             df=df,
             id_discrete=id_discrete,
             id_continuous=id_continuous,
             target_size=target_size,
-            dict_agg=dict_agg,
-            verbose=verbose
+            method="agg"
         )
+        df["__n_cut_dyn__"] = df["__n_cut__"]
 
-    return df
+        df["__target__"] = (df["__cumul__"] // df["__n_cut__"].floordiv(1).replace(0, 1)).bfill()
+        # modulos of target length indicate local minima = where to limit segment aggregation
+        df["__%_a__"] = df["__cumul__"] % df["__target__"]
+        df["__%_b__"] = df["__target__"] - (df["__cumul__"] % df["__target__"])
+        df["__%_min__"] = df[["__%_a__", "__%_b__"]].min(axis=1)
 
-
-def homogenize_between(
-        df1: pd.DataFrame,
-        df2: pd.DataFrame,
-        id_discrete: list[Any],
-        id_continuous: list[Any],
-        dict_agg_df1: dict[str, list[str]] | None = None,
-        dict_agg_df2: dict[str, list[str]] | None = None,
-        keep_df1: bool = False,
-        verbose: bool = False
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    If the ratio of max segment size in one dataframe and min segment size in the other dataframe > 2, it may create
-    issues in the unbalanced_concat function. homogenize_between changes the segments sizes in the dataframes to
-    target a ratio < 2 between the dataframes.
-
-    Demonstration of the problem:
-    Example of the early merging phase in unbalanced_merge:
-    row 1: from df1 30 50
-    row 2: from df1 50 70
-    row 3, from df2 15 85
-    unbalanced_merge will detect the overlap between row 2 and row 3, but it will not detect that row 1 is
-    also overlapping with row 3. Thus, created splits will be 15-50, 50-70, 70-85 instead of being
-    15-30, 30-50, 50-70, 70-85. Ratio of max segment in df2 / min segment in df1 < 2 eliminates this problem:
-    row 1: from df2 15-45
-    row 2, from df1 30-50
-    row 3: from df1 50 70
-    row 4: from df2 45-85
-    => splits will be 15-30, 30-45, 45-50, 50-70, 70-85
-
-    Parameters
-    ----------
-    df1 : pandas dataframe
-    df2 : pandas dataframe
-    id_discrete : list
-        discrete columns (object or categorical)
-    id_continuous : list of 2 column names
-        continuous columns that delimit the segments' start and end
-    dict_agg_df1: optional, dict[str, list[str]] | None
-        dictionary with settings about how to handle the columns in df1 that are neither id_discrete nor id_continuous
-    dict_agg_df2: optional, dict[str, list[str]] | None
-        dictionary with settings about how to handle the columns in df2 that are neither id_discrete nor id_continuous
-    keep_df1: optional, bool
-        default to False. If True, the segmentation in df1 does not change. Only df2 adapts to df1.
-    verbose: optional. boolean
-        whether to print shape of df and if df is admissible at the end of the function.
-
-    Returns
-    -------
-    df: pandas dataframe
-
-    """
-    df1 = df1.copy()
-    df2 = df2.copy()
-
-    df1["__diff__"] = (df1[id_continuous[1]] - df1[id_continuous[0]])
-    df2["__diff__"] = (df2[id_continuous[1]] - df2[id_continuous[0]])
-
-    min_diff = df1["__diff__"].min()
-    min_diff_ref = df2["__diff__"].min()
-    if 1.33 * min_diff < min_diff_ref:
-        target_size = int(1.33 * min_diff)
-    else:
-        target_size = int(1.33 * min_diff_ref)
-    print(f"homogenize_between: chosen target size: {target_size}")
-
-    df2 = homogenize_within(
-        df=df2.drop("__diff__", axis=1),
-        id_discrete=id_discrete,
-        id_continuous=id_continuous,
-        target_size=target_size,
-        dict_agg=dict_agg_df2,
-        verbose=verbose
-    )
-
-    if not keep_df1:
-        df1 = homogenize_within(
-            df=df1.drop("__diff__", axis=1),
-            id_discrete=id_discrete,
-            id_continuous=id_continuous,
-            target_size=target_size,
-            dict_agg=dict_agg_df1,
-            verbose=verbose
+        df["__lim__"] = 0
+        mask = (
+                (df["__%_min__"].diff()) <= 0
+                & (df["__%_min__"].diff(-1) <= 0)
+                & (~df["__new_seg__"])
         )
+        df.loc[mask, "__lim__"] = -1
+        df.loc[df["__lim__"].diff() == 1, "__lim__"] = 1
+        df.loc[df["__new_seg__"], "__lim__"] = 1
+        df["__lim__"] = df["__lim__"].replace(-1, 0)
+        df["__lim__"] = df["__lim__"].cumsum().ffill().fillna(0)
 
-    return df1, df2
+        # the 1st row of a super segment (marked by __new_seg__) is necessarily the start of a new segment. Since
+        # target_size > 2 * size of any segment, at least 2 rows should be aggregated to create a new segments that
+        # approximate target_size. Therefore, the 1st row of a super segment has to be aggregated with the 2nd row.
+        df.loc[(df["__new_seg__"] & ~df["__new_seg__"].shift(-1).fillna(True)), "__lim__"] = np.nan
+        df["__lim__"] = df["__lim__"].bfill()
 
+        # correction to reattach last isolated segments to the penultimate segments, if possible size wise
+        df["__n_cut__"] = df["__n_cut__"].bfill()
+        size_left = ((df["__n_cut__"] * target_size - (target_size // 1.5)) - df["__cumul__"].shift()).round()
+        mask = (
+                (df["__target__"] - target_size + size_left < 0.33 * target_size)  # check size after reattachment
+                & (df["__cumul__"] > (df["__n_cut__"].floordiv(1) * df["__target__"]))  # check if last segments
+                & (~((df["__%_min__"].diff() < 0) & (df["__%_min__"].diff(-1) < 0)))  # check if last segments
+                & (~df["__new_seg__"])  # check if not super segment of single row
+        )
+        df.loc[mask, "__lim__"] = np.nan
+        df["__lim__"] = df["__lim__"].ffill()
 
-def segmentation_irregular(
-        df: pd.DataFrame,
-        id_discrete: list[Any],
-        id_continuous: [Any, Any],
-        length_target,
-        length_minimal,
-) -> pd.DataFrame:
-    """
-    Parameters
-    ----------
-    df: pd.DataFrame
-    id_discrete: list[str]
-        list of name of columns of categorical type
-    id_continuous: list[str, str]
-        list of name of 2 columns of numerical type, indicating the start and the end of the segment
-    length_target
-        length to obtain at the end of the segmentation
-    length_minimal
-        When there are gaps in the dataframe, define the length beyond which this could be considered as a
-        deliberate break in the segmentation and not as missing data. Under this threshold, a new row will
-        be created to ensure the continuity between successive segments in the dataframe.
+        #  2871305, 688214, 2347779, 1296188, 2535516, 2700249
+        df = df.drop(
+            ["__cumul__", "__new_seg__", "__n_cut__", "__target__", "__%_a__", "__%_b__", "__%_min__"],
+            axis=1)
+        return df["__lim__"]
 
-    Returns
-    -------
-    pd.DataFrame
-        New dataframe containing only the columns id_discrete and id_continuous, with the length of the segments
-        adjusted to be as close as possible to length_target.
-    """
-
-    df_new = tools.create_continuity(
-        df=df,
-        id_discrete=id_discrete,
-        id_continuous=id_continuous,
-        limit=length_minimal,
-        sort=False
-    )
-
-    df_new = homogenize_within(
-        df=df_new[[*id_discrete, *id_continuous]],
-        id_discrete=id_discrete,
-        id_continuous=id_continuous,
-        method=["agg", "split"],
-        target_size=length_target,
-        dict_agg=None,
-        strict_size=False,
-        verbose=False
-    )
-
-    return df_new
-
-
-def segmentation_regular(
-        df: pd.DataFrame,
-        id_discrete: list[Any],
-        id_continuous: [Any, Any],
-        length_target,
-        length_gap_filling,
-) -> pd.DataFrame:
-    data = tools.create_continuity(
-        df.__deepcopy__(),
-        id_discrete=id_discrete,
-        id_continuous=id_continuous,
-        limit=length_gap_filling)
-    indexes = [*id_continuous, *id_discrete]
-
-    df_disc_f = data.groupby(id_discrete)[id_continuous[1]].max().reset_index()
-    df_disc_d = data.groupby(id_discrete)[id_continuous[0]].min().reset_index()
-    df_disc = pd.merge(df_disc_d, df_disc_f, on=id_discrete)
-    df_disc["nb_coupon"] = np.round((df_disc[id_continuous[1]] - df_disc[id_continuous[0]]) / length_target).astype(int)
-    df_disc["nb_coupon_cumsum"] = df_disc["nb_coupon"].cumsum()
-    df_disc["nb_coupon_cumsum0"] = 0
-    df_disc.loc[df_disc.index[1:], "nb_coupon_cumsum0"] = df_disc["nb_coupon_cumsum"].values[:-1]
-
-    # Create empty regular segment table and we fill it with regular segment
-    df_new = pd.DataFrame(index=range(df_disc["nb_coupon"].sum()),
-                          columns=id_discrete)
-
-    accumulator = {k: [] for k in indexes}
-
-    for ix in df_disc.index:
-        nb_cs = df_disc.loc[ix].to_dict()
-        value_temp = np.linspace(
-            nb_cs[id_continuous[0]],
-            nb_cs[id_continuous[1]],
-            num=int(nb_cs["nb_coupon"] + 1), dtype=int)
-
-        accumulator[id_continuous[0]] += list(value_temp[:-1])
-        accumulator[id_continuous[1]] += list(value_temp[1:])
-        for idd in id_discrete:
-            accumulator[idd] += list(np.array([nb_cs[idd]] * len(value_temp[1:])))
-
-    for index in indexes:
-        df_new[index] = accumulator[index]
-
-    df_new.index = range(len(df_new))
-
-    return df_new
-
-
-def aggregate_on_segmentation(
-        df_segmentation: pd.DataFrame,
-        df_data: pd.DataFrame,
-        id_discrete: list[str],
-        id_continuous: list[str],
-        dict_agg: dict[str, list[str]] | None = None
-):
-    """
-    adds data to segmentation
-
-    Parameters
-    ----------
-    df_segmentation: pd.DataFrame
-        the dataframe containing the segmentation. Should contain only columns id_discrete and id_continuous
-    df_data: pd.DataFrame
-        the dataframe containing the features to fit to the segmentation. Should contain the columns
-        id_discrete and id_continuous as well as other columns for the features of interest.
-    id_discrete
-    id_continuous
-    dict_agg:
-
-    Returns
-    -------
-    pd.DataFrame:
-        a dataframe with the feature data fitted to the new segmentation.
-    """
-    # verification of requirements
-    for col in id_continuous + id_discrete:
-        if col not in df_segmentation.columns or col not in df_data.columns:
-            raise Exception(f"Error: {col} is not present in both dataframes df_segm and df_feat.")
-
-    is_df_segm_admissible = tools.admissible_dataframe(
-        data=df_segmentation, id_discrete=id_discrete, id_continuous=id_continuous
-    )
-    is_df_feat_admissible = tools.admissible_dataframe(
-        data=df_data, id_discrete=id_discrete, id_continuous=id_continuous
-    )
-    if not is_df_segm_admissible or not is_df_feat_admissible:
-        raise Exception("Error: Both dataframes should be admissible:"
-                        f"Is df_segm admissible? {is_df_segm_admissible}"
-                        f"Is df_feat admissible? {is_df_feat_admissible}")
-
-    # homogenize_between() reduces the difference in segment size between df_feat and df_segm. More precisely, it
-    # adjusts df_feat to df_segm. This may reduce the risk of error when using merge().
-    df_segmentation, df_features = homogenize_between(
-        df1=df_segmentation,
-        df2=df_data,
-        id_discrete=id_discrete,
-        id_continuous=id_continuous,
-        dict_agg_df1=None,
-        dict_agg_df2=dict_agg,
-        keep_df1=True,
-        verbose=False
-    )
-
-    df_segmentation["__id__"] = 1
-    df_segmentation["__id__"] = df_segmentation["__id__"].cumsum()
-
-    # merging the segmentations in both df
-    df_merge = merge(
-        data_left=df_segmentation,
-        data_right=df_features,
-        id_continuous=id_continuous,
-        id_discrete=id_discrete,
-        how="left",
-        remove_duplicates=False,
-        verbose=False
-    )
-
-    # groupby based on the settings in dict_agg and based on grouping variable __id__
-    df_merge = concretize_aggregation(
-        df=df_merge,
-        id_discrete=id_discrete,
-        id_continuous=id_continuous,
-        dict_agg=dict_agg,
-        add_group_by="__id__",
-        verbose=False
-    )
-
-    df_merge = df_merge.drop(columns=["__id__"])
-
-    df_merge = tools.reorder_columns(df_merge, id_discrete, id_continuous)
-
-    return df_merge
+def sort(df: pd.DataFrame, id_discrete: list[Any], id_continuous: [Any, Any]) -> pd.DataFrame:
+    return df.sort_values(by=[*id_discrete, *id_continuous])
