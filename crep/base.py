@@ -1360,7 +1360,7 @@ def segmentation_irregular(
         id_discrete: list[Any],
         id_continuous: [Any, Any],
         length_target,
-        length_minimal,
+        length_gap_filling,
 ) -> pd.DataFrame:
     """
     Parameters
@@ -1372,7 +1372,7 @@ def segmentation_irregular(
         list of name of 2 columns of numerical type, indicating the start and the end of the segment
     length_target
         length to obtain at the end of the segmentation
-    length_minimal
+    length_gap_filling
         When there are gaps in the dataframe, define the length beyond which this could be considered as a
         deliberate break in the segmentation and not as missing data. Under this threshold, a new row will
         be created to ensure the continuity between successive segments in the dataframe.
@@ -1388,7 +1388,7 @@ def segmentation_irregular(
         df=df,
         id_discrete=id_discrete,
         id_continuous=id_continuous,
-        limit=length_minimal,
+        limit=length_gap_filling,
         sort=False
     )
 
@@ -1420,9 +1420,16 @@ def segmentation_regular(
         limit=length_gap_filling)
     indexes = [*id_continuous, *id_discrete]
 
-    df_disc_f = data.groupby(id_discrete)[id_continuous[1]].max().reset_index()
-    df_disc_d = data.groupby(id_discrete)[id_continuous[0]].min().reset_index()
-    df_disc = pd.merge(df_disc_d, df_disc_f, on=id_discrete)
+    data = data.sort_values(by=[*id_discrete, *id_continuous])
+    data["__new_segm__"] = tools.mark_new_segment(df=data, id_discrete=id_discrete, id_continuous=id_continuous)
+    data["__id__"] = data["__new_segm__"].cumsum()
+    data = data.drop(columns=["__new_segm__"])
+
+    df_disc_f = data.groupby(id_discrete + ["__id__"])[id_continuous[1]].max().reset_index()
+    df_disc_d = data.groupby(id_discrete + ["__id__"])[id_continuous[0]].min().reset_index()
+    df_disc = pd.merge(df_disc_d, df_disc_f, on=id_discrete + ["__id__"])
+    df_disc = df_disc.drop(columns="__id__")
+
     df_disc["nb_coupon"] = np.round((df_disc[id_continuous[1]] - df_disc[id_continuous[0]]) / length_target).astype(int)
     df_disc["nb_coupon_cumsum"] = df_disc["nb_coupon"].cumsum()
     df_disc["nb_coupon_cumsum0"] = 0
