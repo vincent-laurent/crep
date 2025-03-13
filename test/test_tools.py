@@ -97,26 +97,46 @@ def test_cumul_segment_length():
     assert cumul.to_list() == [50, 100, 50, 100, 150, 50, 100, 150], "\n" + str(cumul)
 
 
+# def test_weighted_mode1():
+#     df = pd.DataFrame({"discr1": [1000, 1000, 1000],
+#                        "cont1": [50, 100, 200],
+#                        "cont2": [100, 200, 300],
+#                        "objet": ["A", "B", "C"]})
+#     weights = df["cont2"] - df["cont1"]
+#     mode = tools.weighted_mode_(df=df[["objet"]], weights=weights)
+#     assert mode["objet"] == 'B, C', mode["objet"]
+#
+#
+# def test_weighted_mode2():
+#     df = pd.DataFrame({"discr1": [1000, 1000, 1000],
+#                        "cont1": [50, 110, 200],
+#                        "cont2": [110, 200, 300],
+#                        "objet": ["A", "B", "C"]})
+#     weights = df["cont2"] - df["cont1"]
+#     mode = tools.weighted_mode_(df=df[["objet"]], weights=weights)
+#     assert mode["objet"] == 'C', mode["objet"]
+
+
 def test_concretize_aggregation():
     df = pd.DataFrame({"discr1": [1000, 1000, 1000, 1000, 1000, 2000, 2000, 2000],
                        "discr2": [1] * 2 + [2] * 3 + [1] * 3,
                        "cont1": [50, 100, 50, 100, 150, 50, 100, 150],
                        "cont2": [100, 150, 100, 150, 200, 100, 150, 200],
                        "date": [2008, 2010, 2014, 2016, 2018, 2020, 2022, 2024],
-                       "objet": ["A", "B", "A", "A", "B", "B", "B", "B"]})
+                       "objet": ["A", "A", "A", "A", "B", "B", "B", "B"]})
     df_test = tools.concretize_aggregation(
         df,
         id_discrete=["discr1", "discr2"],
         id_continuous=["cont1", "cont2"],
-        dict_agg={"min": ["date"], "max": ["date"], "sum": ["date"], "mean": ['date'], "mode": ["objet"]}, verbose=True
+        dict_agg={"min": ["date"], "max": ["date"], "sum": ["date"], "mean": ['date'], "mode": ["objet"]},
     )
     assert \
         ((df_test["min_date"].to_list() == [2008, 2014, 2020])
          & (df_test["max_date"].to_list() == [2010, 2018, 2024])
          & (df_test["sum_date"].to_list() == [4018, 6048, 6066])
          & (df_test["mean_date"].to_list() == [2009.0, 2016.0, 2022.0])
-         & (df_test["mode_objet"].to_list() == ["A, B", "A", "B"])), \
-        "\n" + str(df_test)
+         & (df_test["mode_objet"].to_list() == ["A", "A", "B"])
+         & (len(df_test.columns) == 9)), "\n" + str(df_test)
 
 
 def test_concretize_aggregation2():
@@ -131,9 +151,30 @@ def test_concretize_aggregation2():
         id_discrete=["discr1", "discr2"],
         id_continuous=["cont1", "cont2"],
         dict_agg=None,
-        verbose=True
+        verbose=False
     )
     assert "mean_date" in list(df_test.columns) and "mode_objet" in list(df_test.columns), "\n" + str(df_test)
+
+
+def test_concretize_aggregation3():
+    df = pd.DataFrame({"discr1": [1000, 1000, 1000, 1000, 1000, 2000, 2000, 2000],
+                       "discr2": [1] * 2 + [2] * 3 + [1] * 3,
+                       "cont1": [50, 100, 50, 100, 150, 50, 100, 150],
+                       "cont2": [100, 150, 100, 150, 200, 100, 150, 200],
+                       "date": [2008, 2010, 2014, 2016, 2018, 2020, 2022, 2024],
+                       "objet1": ["A", "B", "A", "A", "B", "B", "B", "B"],
+                       "objet2": ["A", "B", "A", "B", "B", "B", "B", "B"]})
+    df_test = tools.concretize_aggregation(
+        df,
+        id_discrete=["discr1", "discr2"],
+        id_continuous=["cont1", "cont2"],
+        dict_agg=None,
+        verbose=True
+    )
+    assert "mean_date" in list(df_test.columns) and \
+           "mode_objet1" in list(df_test.columns) and \
+           "mode_objet2" in list(df_test.columns), "\n" + str(df_test)
+
 
 def test_n_cut_finder_case1():
     df = pd.DataFrame({"discr1": [1000] * 8 + [2000] * 4,

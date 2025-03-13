@@ -6,6 +6,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from pandas.plotting import andrews_curves
 
 from crep import base
 from crep import (merge, aggregate_constant, aggregate_duplicates, aggregate_on_segmentation)
@@ -81,6 +82,7 @@ def test_merge_basic_empty_id_discrete(get_examples):
     assert ret.equals(ret_th)
     assert ret_l.equals(ret_th_l)
 
+
 def test__merge(get_advanced_examples):
     df_left, df_right = get_advanced_examples
 
@@ -110,6 +112,24 @@ def test_aggregate_constant(get_examples):
     ret_th.index = ret.index
     assert len(ret) < len(df_left)
     assert ret_th.equals(ret)
+
+
+def test_aggregate_duplicates():
+    df = pd.DataFrame({"discr": [1000, 1000, 1000, 1000],
+                       "cont1": [50, 50, 50, 100],
+                       "cont2": [100, 100, 100, 150],
+                       "quantity": [1, 0, 0.5, 1],
+                       "objet": ["A", "B", "A", "B"]})
+    df_test = base.aggregate_duplicates(
+        df,
+        id_discrete=["discr"],
+        id_continuous=["cont1", "cont2"],
+        dict_agg=None,
+        verbose=True
+    )
+    assert 0.5 in list(df_test["mean_quantity"]) and \
+           "A" in list(df_test["mode_objet"]) and \
+            len(df_test) == 2, "\n" + str(df_test)
 
 
 def test_merge_duplicates(get_examples):
@@ -343,7 +363,7 @@ def test_homogenize_within_case1():
                        "cont1": [50, 100, 150, 200, 40, 75, 135, 178, 50, 90, 150, 210],
                        "cont2": [100, 150, 200, 250, 75, 135, 178, 211, 90, 150, 210, 280],
                        "date": list(range(2000, 2024, 2))})
-    df_test = homogenize_within(
+    df_test = base.homogenize_within(
         df=df,
         id_discrete=["discr1", "discr2"],
         id_continuous=["cont1", "cont2"],
@@ -489,7 +509,7 @@ def test_aggregate_duplicates_case1():
                        "cont1": [50, 80, 80, 80, 80, 150, 80, 80, 80],
                        "cont2": [80, 150, 150, 150, 150, 250, 105, 105, 105],
                        "date": list(range(2000, 2018, 2))})
-    df_test = aggregate_duplicates(
+    df_test = base.aggregate_duplicates(
         df=df,
         id_discrete=["discr1", "discr2"],
         id_continuous=["cont1", "cont2"], verbose=True
@@ -530,7 +550,7 @@ def test_aggregate_duplicates_case3():
                        "cont2": [80, 150, 150, 150, 150, 250, 105, 105, 105],
                        "mean_date": list(range(2000, 2018, 2))})
     dict_agg = {"mean": ["mean_date"], "max": ["mean_date"]}
-    df_test = aggregate_duplicates(
+    df_test = base.aggregate_duplicates(
         df=df,
         id_discrete=["discr1", "discr2"],
         id_continuous=["cont1", "cont2"],
@@ -857,7 +877,7 @@ def test_aggregate_on_segmentation():
                             "data1": [2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008],
                             "data2": [1, 0, 1, 1, 0, 1, 0, 0],
                             })
-    df_test = aggregate_on_segmentation(
+    df_test = base.aggregate_on_segmentation(
         df_segmentation=df_segm,
         df_data=df_feat,
         id_discrete=["discr1"],
@@ -867,8 +887,8 @@ def test_aggregate_on_segmentation():
     print(df_test.to_dict(orient="list"))
     assert str(df_test) == str(pd.DataFrame({
         'discr1': [1000, 1000, 2000, 2000],
-        'cont1': [0, 100, 0, 100],
-        'cont2': [100, 200, 100, 200],
-        'mean_data1': [2001.6, 2003.3, 2005.6, 2007.35],
+        'cont1': [0.0, 100.0, 0.0, 100.0],
+        'cont2': [100.0, 200.0, 100.0, 200.0],
+        'mean_data1': [2001.60, 2003.30, 2005.60, 2007.35],
         'sum_data2': [1.0, 2.0, 1.0, 0.0],
     })), "\n" + str(df_test)
