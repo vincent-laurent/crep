@@ -157,7 +157,7 @@ class DataFrameContinuous(pd.DataFrame):
             df = df.loc[mask, :].reset_index(drop=True)
         return self._return(df)
 
-    def make_admissible(self, verbose=False, allow_agg_dupl=True):
+    def make_admissible(self, verbose=False, allow_agg_dupl=True, dict_agg: dict[str, list[str]] = None):
         df = self
         if not self.admissible:
             df = tools.build_admissible_data(
@@ -176,7 +176,8 @@ class DataFrameContinuous(pd.DataFrame):
             df = base.aggregate_duplicates(
                 df=df,
                 id_discrete=self._discrete_index,
-                id_continuous=self._continuous_index
+                id_continuous=self._continuous_index,
+                dict_agg=dict_agg
             )
         df = self._return(df)
         if not df.admissible:
