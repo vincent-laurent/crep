@@ -86,7 +86,7 @@ Module Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: unbalanced_merge(data_admissible: pandas.DataFrame, data_not_admissible: pandas.DataFrame, id_discrete: iter, id_continuous: [Any, Any]) -> pandas.DataFrame
+.. py:function:: unbalanced_merge(data_admissible: pandas.DataFrame, data_not_admissible: pandas.DataFrame, id_discrete: iter, id_continuous: [Any, Any], how) -> pandas.DataFrame
 
    
    Merge admissible and non-admissible dataframes based on discrete and continuous identifiers.
@@ -105,6 +105,14 @@ Module Contents
 
        **id_continuous** : list
            List of column names representing continuous identifiers.
+
+       **how: str**
+           how to make the merge, possible options are
+           
+           - 'left'
+           - 'right'
+           - 'inner'
+           - 'outer'
 
 
 

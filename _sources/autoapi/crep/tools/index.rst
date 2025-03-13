@@ -25,6 +25,7 @@ Functions
    crep.tools.n_cut_finder
    crep.tools.clusterize
    crep.tools.sort
+   crep.tools.count_parallel_segment
 
 
 Module Contents
@@ -382,4 +383,27 @@ Module Contents
        !! processed by numpydoc !!
 
 .. py:function:: sort(df: pandas.DataFrame, id_discrete: list[Any], id_continuous: [Any, Any]) -> pandas.DataFrame
+
+.. py:function:: count_parallel_segment(df, id_discrete: list[Any], id_continuous: [Any, Any]) -> pandas.DataFrame
+
+   
+   This function aims at calculating the number of track for id_discret.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   ..
+       !! processed by numpydoc !!
 
