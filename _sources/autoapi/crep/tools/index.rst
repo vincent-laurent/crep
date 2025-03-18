@@ -231,7 +231,7 @@ Module Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: concretize_aggregation(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], dict_agg: Optional[Dict[str, Iterable[Any]]], add_group_by: Optional[Any | Iterable[Any]] = None, verbose: bool = False) -> pandas.DataFrame
+.. py:function:: concretize_aggregation(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], dict_agg: Optional[Dict[str, Iterable[Any]]], add_group_by: Optional[Union[Any, Iterable[Any]]] = None, verbose: bool = False) -> pandas.DataFrame
 
    
    Groupby + aggregation operations
