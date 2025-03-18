@@ -81,7 +81,7 @@ Package Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: aggregate_constant(df: pandas.DataFrame, id_discrete: iter, id_continuous: iter)
+.. py:function:: aggregate_constant(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any])
 
    
 
@@ -118,7 +118,7 @@ Package Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: aggregate_duplicates(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], dict_agg: Dict[str, Iterable[Any]] | None = None, verbose: bool = False)
+.. py:function:: aggregate_duplicates(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], dict_agg: Optional[Dict[str, Iterable[Any]]] = None, verbose: bool = False)
 
    
    Removes duplicated rows by aggregating them.
@@ -167,7 +167,7 @@ Package Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: merge_event(data_left: pandas.DataFrame, data_right: pandas.DataFrame, id_discrete: iter, id_continuous: [Any, Any], id_event)
+.. py:function:: merge_event(data_left: pandas.DataFrame, data_right: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], id_event)
 
    
    Assigns the details of events occurring at a specific points, in data_right, to the corresponding segment
@@ -213,7 +213,7 @@ Package Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: aggregate_on_segmentation(df_segmentation: pandas.DataFrame, df_data: pandas.DataFrame, id_discrete: Iterable[str], id_continuous: Iterable[str], dict_agg: Dict[str, Iterable[str]] | None = None)
+.. py:function:: aggregate_on_segmentation(df_segmentation: pandas.DataFrame, df_data: pandas.DataFrame, id_discrete: Iterable[str], id_continuous: Iterable[str], dict_agg: Optional[Dict[str, Iterable[str]]] = None)
 
    
    adds data to segmentation
