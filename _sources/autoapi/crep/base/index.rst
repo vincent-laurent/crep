@@ -490,7 +490,7 @@ Module Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: homogenize_within(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], target_size: Optional[float | int] = None, method: Optional[Literal['agg', 'split'] | Iterable[Literal['agg', 'split']] | set[Literal['agg', 'split']]] = None, dict_agg: Optional[Dict[str, Iterable[Any]]] = None, strict_size: bool = False, verbose: bool = False) -> pandas.DataFrame
+.. py:function:: homogenize_within(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], target_size: Optional[Union[float, int]] = None, method: Optional[Union[Literal['agg', 'split'], Iterable[Literal['agg', 'split']], set[Literal['agg', 'split']]]] = None, dict_agg: Optional[Dict[str, Iterable[Any]]] = None, strict_size: bool = False, verbose: bool = False) -> pandas.DataFrame
 
    
    Uniformizes segment size by splitting them into shorter segments close to target size. The uniformization aims
