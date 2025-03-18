@@ -549,7 +549,7 @@ Module Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: homogenize_between(df1: pandas.DataFrame, df2: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: Iterable[Any], dict_agg_df1: Optional[Dict[str, Iterable[str]]] = None, dict_agg_df2: Optional[Dict[str, Iterable[str]]] = None, keep_df1: bool = False, verbose: bool = False) -> tuple[pandas.DataFrame, pandas.DataFrame]
+.. py:function:: homogenize_between(df1: pandas.DataFrame, df2: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: Iterable[Any], dict_agg_df1: Optional[Dict[str, Iterable[str]]] = None, dict_agg_df2: Optional[Dict[str, Iterable[str]]] = None, keep_df1: bool = False, verbose: bool = False) -> Tuple[pandas.DataFrame, pandas.DataFrame]
 
    
    If the ratio of max segment size in one dataframe and min segment size in the other dataframe > 2, it may create
