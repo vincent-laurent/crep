@@ -340,7 +340,7 @@ Module Contents
 
 .. py:function:: __table_jumps(data, id1, id2, id_discrete)
 
-.. py:function:: aggregate_duplicates(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], dict_agg: dict[str, Iterable[Any]] | None = None, verbose: bool = False)
+.. py:function:: aggregate_duplicates(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], dict_agg: Dict[str, Iterable[Any]] | None = None, verbose: bool = False)
 
    
    Removes duplicated rows by aggregating them.
@@ -389,7 +389,7 @@ Module Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: aggregate_continuous_data(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], target_size: int, dict_agg: None | dict[str, Iterable[Any]] = None, verbose: bool = False) -> pandas.DataFrame
+.. py:function:: aggregate_continuous_data(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], target_size: int, dict_agg: None | Dict[str, Iterable[Any]] = None, verbose: bool = False) -> pandas.DataFrame
 
    
    Aggregate segments to uniformize the size of smaller segments.
@@ -490,7 +490,7 @@ Module Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: homogenize_within(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], target_size: float | int | None = None, method: Literal['agg', 'split'] | Iterable[Literal['agg', 'split']] | set[Literal['agg', 'split']] | None = None, dict_agg: dict[str, Iterable[Any]] | None = None, strict_size: bool = False, verbose: bool = False) -> pandas.DataFrame
+.. py:function:: homogenize_within(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], target_size: float | int | None = None, method: Literal['agg', 'split'] | Iterable[Literal['agg', 'split']] | set[Literal['agg', 'split']] | None = None, dict_agg: Dict[str, Iterable[Any]] | None = None, strict_size: bool = False, verbose: bool = False) -> pandas.DataFrame
 
    
    Uniformizes segment size by splitting them into shorter segments close to target size. The uniformization aims
@@ -549,7 +549,7 @@ Module Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: homogenize_between(df1: pandas.DataFrame, df2: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: Iterable[Any], dict_agg_df1: dict[str, Iterable[str]] | None = None, dict_agg_df2: dict[str, Iterable[str]] | None = None, keep_df1: bool = False, verbose: bool = False) -> tuple[pandas.DataFrame, pandas.DataFrame]
+.. py:function:: homogenize_between(df1: pandas.DataFrame, df2: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: Iterable[Any], dict_agg_df1: Dict[str, Iterable[str]] | None = None, dict_agg_df2: Dict[str, Iterable[str]] | None = None, keep_df1: bool = False, verbose: bool = False) -> tuple[pandas.DataFrame, pandas.DataFrame]
 
    
    If the ratio of max segment size in one dataframe and min segment size in the other dataframe > 2, it may create
@@ -584,10 +584,10 @@ Module Contents
        **id_continuous** : list of 2 column names
            continuous columns that delimit the segments' start and end
 
-       **dict_agg_df1: optional, dict[str, Iterable[str]] | None**
+       **dict_agg_df1: optional, Dict[str, Iterable[str]] | None**
            dictionary with settings about how to handle the columns in df1 that are neither id_discrete nor id_continuous
 
-       **dict_agg_df2: optional, dict[str, Iterable[str]] | None**
+       **dict_agg_df2: optional, Dict[str, Iterable[str]] | None**
            dictionary with settings about how to handle the columns in df2 that are neither id_discrete nor id_continuous
 
        **keep_df1: optional, bool**
@@ -664,7 +664,7 @@ Module Contents
 
 .. py:function:: segmentation_regular(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], length_target, length_gap_filling) -> pandas.DataFrame
 
-.. py:function:: aggregate_on_segmentation(df_segmentation: pandas.DataFrame, df_data: pandas.DataFrame, id_discrete: Iterable[str], id_continuous: Iterable[str], dict_agg: dict[str, Iterable[str]] | None = None)
+.. py:function:: aggregate_on_segmentation(df_segmentation: pandas.DataFrame, df_data: pandas.DataFrame, id_discrete: Iterable[str], id_continuous: Iterable[str], dict_agg: Dict[str, Iterable[str]] | None = None)
 
    
    adds data to segmentation

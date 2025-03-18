@@ -118,7 +118,7 @@ Package Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: aggregate_duplicates(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], dict_agg: dict[str, Iterable[Any]] | None = None, verbose: bool = False)
+.. py:function:: aggregate_duplicates(df: pandas.DataFrame, id_discrete: Iterable[Any], id_continuous: [Any, Any], dict_agg: Dict[str, Iterable[Any]] | None = None, verbose: bool = False)
 
    
    Removes duplicated rows by aggregating them.
@@ -213,7 +213,7 @@ Package Contents
    ..
        !! processed by numpydoc !!
 
-.. py:function:: aggregate_on_segmentation(df_segmentation: pandas.DataFrame, df_data: pandas.DataFrame, id_discrete: Iterable[str], id_continuous: Iterable[str], dict_agg: dict[str, Iterable[str]] | None = None)
+.. py:function:: aggregate_on_segmentation(df_segmentation: pandas.DataFrame, df_data: pandas.DataFrame, id_discrete: Iterable[str], id_continuous: Iterable[str], dict_agg: Dict[str, Iterable[str]] | None = None)
 
    
    adds data to segmentation
